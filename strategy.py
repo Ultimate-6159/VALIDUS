@@ -197,7 +197,7 @@ class Strategy:
         if sweep is None:
             log.debug("No liquidity sweep detected.")
             return None
-        log.info("🔍 Liquidity sweep detected: %s", sweep)
+        log.info("[SWEEP] Liquidity sweep detected: %s", sweep)
 
         # --- ATR for sizing ---
         atr_series = _atr(
@@ -211,7 +211,7 @@ class Strategy:
         if fvg is None:
             log.debug("No displacement / FVG after sweep.")
             return None
-        log.info("⚡ Displacement FVG found: %s", fvg)
+        log.info("[FVG] Displacement FVG found: %s", fvg)
 
         # --- Build Signal ---
         direction = fvg["direction"]
@@ -237,7 +237,7 @@ class Strategy:
             sl=round(sl, 5),
             tp=round(tp, 5),
             fvg_zone=(round(fvg["fvg_bottom"], 5), round(fvg["fvg_top"], 5)),
-            reason=f"Sweep@{sweep['sweep_level']:.5f} → FVG retrace",
+            reason=f"Sweep@{sweep['sweep_level']:.5f} -> FVG retrace",
         )
-        log.info("✅ SIGNAL: %s", signal)
+        log.info("[SIGNAL] %s", signal)
         return signal

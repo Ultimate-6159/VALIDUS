@@ -44,23 +44,23 @@ class Guardian:
                 server=config.MT5_SERVER,
             )
             if auth:
-                log.info("✅ MT5 connected – account %s", config.MT5_LOGIN)
+                log.info("[OK] MT5 connected -- account %s", config.MT5_LOGIN)
                 return True
         err = mt5.last_error()
-        log.error("❌ MT5 connection failed: %s", err)
+        log.error("[FAIL] MT5 connection failed: %s", err)
         return False
 
     def ensure_connection(self) -> bool:
         info = mt5.account_info()
         if info is not None:
             return True
-        log.warning("⚠ MT5 disconnected — attempting reconnect …")
+        log.warning("[WARN] MT5 disconnected -- attempting reconnect...")
         for attempt in range(1, 6):
             if self.connect():
                 return True
             log.warning("  reconnect attempt %d/5 failed", attempt)
             time.sleep(2)
-        log.error("❌ Could not reconnect to MT5.")
+        log.error("[FAIL] Could not reconnect to MT5.")
         return False
 
     # ── Daily drawdown check ────────────────────────────────
@@ -71,14 +71,14 @@ class Guardian:
             self._last_reset_date = dt.datetime.now(dt.timezone.utc).date()
             # Auto-apply account tier based on current balance
             tier_name = config.apply_tier(info.balance)
-            log.info("📊 Start-of-day balance: %.2f", self._start_balance)
+            log.info("[BALANCE] Start-of-day: %.2f", self._start_balance)
             log.info(
-                "🏷  Tier: %s | Risk: %.2f%% | MaxPos: %d | DD Limit: %.1f%%",
+                "[TIER] %s | Risk: %.2f%% | MaxPos: %d | DD Limit: %.1f%%",
                 tier_name, config.RISK_PCT,
                 config.MAX_POSITIONS, config.DAILY_DD_LIMIT_PCT,
             )
             line_notify(
-                f"🏷 Tier: {tier_name} | Balance: ${info.balance:,.2f} "
+                f"[TIER] {tier_name} | Balance: ${info.balance:,.2f} "
                 f"| Risk: {config.RISK_PCT}% | DD Limit: {config.DAILY_DD_LIMIT_PCT}%"
             )
 
@@ -90,7 +90,7 @@ class Guardian:
             self._last_reset_date != today
             and now_utc.hour >= config.DAILY_RESET_HOUR_UTC
         ):
-            log.info("🔄 Daily reset — re-snapshot balance & tier.")
+            log.info("[RESET] Daily reset -- re-snapshot balance & tier.")
             self._force_stopped = False
             self.snapshot_balance()
 
@@ -104,11 +104,11 @@ class Guardian:
         dd_pct = (self._start_balance - info.equity) / self._start_balance * 100
         if dd_pct >= config.DAILY_DD_LIMIT_PCT:
             log.error(
-                "🛑 Daily DD %.2f%% >= limit %.2f%% — FORCE STOP",
+                "[STOP] Daily DD %.2f%% >= limit %.2f%% -- FORCE STOP",
                 dd_pct, config.DAILY_DD_LIMIT_PCT,
             )
             line_notify(
-                f"🛑 Daily drawdown limit hit ({dd_pct:.2f}%). System stopped."
+                f"[STOP] Daily drawdown limit hit ({dd_pct:.2f}%). System stopped."
             )
             self._force_stopped = True
             return True
@@ -225,12 +225,12 @@ class ExecutionMaster:
             return False
 
         log.info(
-            "📈 Opened %s %s %.2f lot @ %.5f  SL=%.5f  TP=%.5f  ticket=%d",
+            "[OPEN] %s %s %.2f lot @ %.5f  SL=%.5f  TP=%.5f  ticket=%d",
             signal.direction, symbol, lot, price,
             signal.sl, signal.tp, result.order,
         )
         line_notify(
-            f"📈 {signal.direction} {symbol} {lot} lot @ {price:.5f}"
+            f"[OPEN] {signal.direction} {symbol} {lot} lot @ {price:.5f}"
         )
         return True
 
@@ -283,7 +283,7 @@ class ExecutionMaster:
                     result = mt5.order_send(request)
                     if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                         log.info(
-                            "🔒 BE moved ticket=%d  new SL=%.5f",
+                            "[BE] SL moved ticket=%d  new SL=%.5f",
                             pos.ticket, be_price,
                         )
                     else:
@@ -325,7 +325,7 @@ class ExecutionMaster:
             result = mt5.order_send(request)
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 closed += 1
-                log.info("🚨 Panic closed ticket=%d", pos.ticket)
+                log.info("[PANIC] Closed ticket=%d", pos.ticket)
         return closed
 
 
@@ -351,30 +351,30 @@ class Dashboard:
 
         lines = [
             "",
-            "╔══════════════════════════════════════════════╗",
-            "║           V A L I D U S   v1.0               ║",
-            "║       Smart Money Sniper — MT5                ║",
-            "╠══════════════════════════════════════════════╣",
-            f"║  Status  : {self.status:<34}║",
-            f"║  Tier    : {tier_name:<8}  Risk: {config.RISK_PCT:.2f}%  DD: {config.DAILY_DD_LIMIT_PCT:.1f}%    ║",
-            f"║  Balance : {balance:>12,.2f}                       ║",
-            f"║  Equity  : {equity:>12,.2f}                       ║",
-            f"║  PnL     : {self._pnl_today:>+12,.2f}                       ║",
-            f"║  Positions: {len(my_pos)}/{config.MAX_POSITIONS:<31}║",
-            "╠══════════════════════════════════════════════╣",
+            "+----------------------------------------------+",
+            "|           V A L I D U S   v1.0               |",
+            "|       Smart Money Sniper - MT5               |",
+            "+----------------------------------------------+",
+            f"|  Status  : {self.status:<34}|",
+            f"|  Tier    : {tier_name:<8}  Risk: {config.RISK_PCT:.2f}%  DD: {config.DAILY_DD_LIMIT_PCT:.1f}%    |",
+            f"|  Balance : {balance:>12,.2f}                       |",
+            f"|  Equity  : {equity:>12,.2f}                       |",
+            f"|  PnL     : {self._pnl_today:>+12,.2f}                       |",
+            f"|  Positions: {len(my_pos)}/{config.MAX_POSITIONS:<31}|",
+            "+----------------------------------------------+",
         ]
         for p in my_pos:
             side = "BUY " if p.type == 0 else "SELL"
             lines.append(
-                f"║  {side} {p.symbol:<10} {p.volume:.2f}  "
-                f"PnL {p.profit:>+8.2f}  tk#{p.ticket:<10}║"
+                f"|  {side} {p.symbol:<10} {p.volume:.2f}  "
+                f"PnL {p.profit:>+8.2f}  tk#{p.ticket:<10}|"
             )
         if not my_pos:
-            lines.append("║  (no active positions)                       ║")
+            lines.append("|  (no active positions)                       |")
         lines += [
-            "╠══════════════════════════════════════════════╣",
-            "║  [S] Start   [Q] Stop   [P] Panic Close     ║",
-            "╚══════════════════════════════════════════════╝",
+            "+----------------------------------------------+",
+            "|  [S] Start   [Q] Stop   [P] Panic Close     |",
+            "+----------------------------------------------+",
         ]
         return "\n".join(lines)
 
@@ -390,6 +390,9 @@ class ValidusBot:
         self.dashboard = Dashboard()
         self._running = False
         self._last_m1_time: dict[str, dt.datetime] = {}
+        self._heartbeat_interval = 300  # log heartbeat every 5 minutes
+        self._last_heartbeat: float = 0
+        self._scan_count: int = 0
 
     # ── Start ───────────────────────────────────────────────
     async def start(self) -> None:
@@ -398,20 +401,21 @@ class ValidusBot:
             return
         self.guardian.snapshot_balance()
         self._running = True
-        self.dashboard.status = "🟢 RUNNING"
-        log.info("🚀 VALIDUS started.")
-        line_notify("🚀 System started.")
+        self.dashboard.status = "RUNNING"
+        log.info("[START] VALIDUS started.")
+        line_notify("[START] VALIDUS system started.")
         await self._main_loop()
 
     # ── Stop ────────────────────────────────────────────────
     def stop(self) -> None:
         self._running = False
-        self.dashboard.status = "🔴 STOPPED"
-        log.info("⏹ VALIDUS stopped.")
-        line_notify("⏹ System stopped.")
+        self.dashboard.status = "STOPPED"
+        log.info("[STOP] VALIDUS stopped.")
+        line_notify("[STOP] VALIDUS system stopped.")
 
     # ── Main loop ───────────────────────────────────────────
     async def _main_loop(self) -> None:
+        self._last_heartbeat = time.time()
         while self._running:
             try:
                 # Guardian checks
@@ -429,6 +433,21 @@ class ValidusBot:
                 # Signal evaluation per symbol
                 for symbol in config.SYMBOLS:
                     await self._process_symbol(symbol)
+
+                # Heartbeat log (every 5 minutes)
+                now = time.time()
+                if now - self._last_heartbeat >= self._heartbeat_interval:
+                    acct = mt5.account_info()
+                    eq = acct.equity if acct else 0
+                    positions = mt5.positions_get() or []
+                    my_pos = [p for p in positions if p.magic == config.ORDER_MAGIC]
+                    pnl = sum(p.profit for p in my_pos)
+                    log.info(
+                        "[HEARTBEAT] Alive | Equity: %.2f | Positions: %d | PnL: %+.2f | Scans: %d",
+                        eq, len(my_pos), pnl, self._scan_count,
+                    )
+                    self._scan_count = 0
+                    self._last_heartbeat = now
 
                 # Dashboard refresh
                 if not config.HEADLESS:
@@ -451,10 +470,11 @@ class ValidusBot:
         if self._last_m1_time.get(symbol) == last_time:
             return
         self._last_m1_time[symbol] = last_time
+        self._scan_count += 1
 
         # News filter
         if is_news_window():
-            log.info("📰 News window — skipping %s", symbol)
+            log.info("[%s] News window active -- skipping.", symbol)
             return
 
         # Check max positions
@@ -466,7 +486,10 @@ class ValidusBot:
         df_m5 = fetch_ohlc(symbol, config.TIMEFRAME_HTF, bars=200)
         signal = self.strategy.evaluate(df_m1, df_m5)
         if signal is not None:
+            log.info("[%s] >> SIGNAL FOUND: %s", symbol, signal)
             self.executor.open_order(symbol, signal)
+        else:
+            log.info("[%s] M1 bar %s scanned -- no signal.", symbol, last_time)
 
 
 # ════════════════════════════════════════════════════════════
@@ -485,8 +508,8 @@ def hotkey_listener(bot: ValidusBot, loop: asyncio.AbstractEventLoop) -> None:
                     bot.stop()
                 elif key == "P":
                     count = ExecutionMaster.panic_close()
-                    log.info("🚨 Panic close: %d positions closed.", count)
-                    line_notify(f"🚨 Panic close: {count} positions closed.")
+                    log.info("[PANIC] %d positions closed.", count)
+                    line_notify(f"[PANIC] {count} positions closed.")
             time.sleep(0.1)
     except ImportError:
         # Fallback for non-Windows (input based)
@@ -498,7 +521,7 @@ def hotkey_listener(bot: ValidusBot, loop: asyncio.AbstractEventLoop) -> None:
                 bot.stop()
             elif key == "P":
                 count = ExecutionMaster.panic_close()
-                log.info("🚨 Panic close: %d positions closed.", count)
+                log.info("[PANIC] %d positions closed.", count)
 
 
 # ════════════════════════════════════════════════════════════
@@ -530,12 +553,12 @@ def main() -> None:
 
     print(
         "\n"
-        "╔══════════════════════════════════════════════╗\n"
-        "║           V A L I D U S   v1.0               ║\n"
-        "║       Smart Money Sniper — MT5                ║\n"
-        "╠══════════════════════════════════════════════╣\n"
-        "║  Mode: {:<38}║\n"
-        "╚══════════════════════════════════════════════╝\n".format(
+        "+----------------------------------------------+\n"
+        "|           V A L I D U S   v1.0               |\n"
+        "|       Smart Money Sniper - MT5               |\n"
+        "+----------------------------------------------+\n"
+        "|  Mode: {:<38}|\n"
+        "+----------------------------------------------+\n".format(
             "AUTO-START (VPS)" if config.AUTO_START else "[S] Start  [Q] Quit"
         )
     )

@@ -101,7 +101,7 @@ def is_news_window() -> bool:
                 ev.get("date", "").replace("Z", "+00:00")
             )
             if abs(now_utc - ev_time) <= buf:
-                log.info("⚠ News window active: %s", ev.get("title", ""))
+                log.info("[NEWS] Window active: %s", ev.get("title", ""))
                 return True
         except Exception:
             continue
