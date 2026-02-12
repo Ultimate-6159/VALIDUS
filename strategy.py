@@ -84,9 +84,11 @@ class Strategy:
             log.info("[VOL] ATR data not ready -- skipping.")
             return False
         current_atr = atr.iloc[-1]
-        if current_atr < config.ATR_THRESHOLD:
-            log.info("[VOL] ATR %.4f < threshold %.4f -- market too quiet.",
-                     current_atr, config.ATR_THRESHOLD)
+        price = df["close"].iloc[-1]
+        relative_atr = current_atr / price if price > 0 else 0.0
+        if relative_atr < config.ATR_THRESHOLD:
+            log.info("[VOL] ATR/price %.6f < threshold %.6f -- market too quiet.",
+                     relative_atr, config.ATR_THRESHOLD)
             return False
 
         # Bollinger Band expansion check
@@ -104,8 +106,9 @@ class Strategy:
             log.info("[VOL] BB expansion %.2f < factor %.2f -- not expanding.",
                      expansion, config.BB_EXPANSION_FACTOR)
             return False
-        log.info("[VOL] PASS: ATR=%.4f (>%.4f) BB_exp=%.2f (>%.2f)",
-                 current_atr, config.ATR_THRESHOLD, expansion, config.BB_EXPANSION_FACTOR)
+        log.info("[VOL] PASS: ATR=%.4f ATR/price=%.6f (>%.6f) BB_exp=%.2f (>%.2f)",
+                 current_atr, current_atr / price if price > 0 else 0.0,
+                 config.ATR_THRESHOLD, expansion, config.BB_EXPANSION_FACTOR)
         return True
 
     # ── Swing level helpers (proper structure detection) ─────
@@ -324,9 +327,12 @@ class Strategy:
         bb_upper, bb_mid, bb_lower = _bbands(
             df_m1["close"], config.BB_PERIOD, config.BB_STD,
         )
-        bb_width = float(bb_upper.iloc[-1] - bb_lower.iloc[-1]) if not bb_upper.empty else 0.0
-        bb_prev = float(bb_upper.iloc[-2] - bb_lower.iloc[-2]) if len(bb_upper) >= 2 else 0.0
-        bb_exp = bb_width / bb_prev if bb_prev > 0 else 0.0
+        if not bb_upper.empty and len(bb_upper) >= config.BB_PERIOD:
+            width_series = bb_upper - bb_lower
+            avg_width = width_series.rolling(config.BB_PERIOD).mean()
+            bb_exp = float(width_series.iloc[-1] / avg_width.iloc[-1]) if avg_width.iloc[-1] > 0 else 0.0
+        else:
+            bb_exp = 0.0
 
         self.last_eval = {
             "atr": current_atr,
@@ -339,7 +345,8 @@ class Strategy:
         # --- Condition 1: Volatility ---
         if not self._volatility_ok(df_m1):
             self.last_eval["fail"] = "VOLATILITY"
-            self.last_eval["detail"] = f"ATR={current_atr:.5f} thr={config.ATR_THRESHOLD} BB_exp={bb_exp:.3f}"
+            atr_rel = current_atr / price if price > 0 else 0.0
+            self.last_eval["detail"] = f"ATR={current_atr:.5f} ATR/p={atr_rel:.6f} thr={config.ATR_THRESHOLD} BB_exp={bb_exp:.3f}"
             return None
 
         # --- Condition 2: Liquidity Sweep ---

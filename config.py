@@ -165,17 +165,17 @@ def apply_tier(balance: float) -> str:
 
 # ── Volatility Filter (XAUUSD-optimized for M1) ────────────
 ATR_PERIOD          = 14
-ATR_THRESHOLD       = 0.25      # ลดเกณฑ์ให้เทรดได้ตลาด vol ปานกลาง
+ATR_THRESHOLD       = 0.00005   # ATR/price ratio (0.005%) — universal ทุก symbol
 BB_PERIOD           = 20
 BB_STD              = 2.0
-BB_EXPANSION_FACTOR = 1.05      # BB ขยายเล็กน้อยก็เข้าได้
+BB_EXPANSION_FACTOR = 0.90      # BB ≥90% ของ avg width ก็พอ — ไม่ต้อง expand
 
 # ── Liquidity Sweep ────────────────────────────────────────
-SWING_LOOKBACK      = 10        # lookback สั้นขึ้น — จับ sweep เยอะขึ้น
-SWEEP_WICK_RATIO    = 0.20      # wick/body ต่ำก็ยอมรับ — sweep เบาๆ
-FVG_MIN_SIZE_ATR    = 0.10      # FVG เล็กก็เข้า — scalping mode
+SWING_LOOKBACK      = 15        # lookback กว้างขึ้น — เจอ swing level มากขึ้น
+SWEEP_WICK_RATIO    = 0.10      # wick/body ต่ำมาก — จับ sweep เบาๆ บน M1
+FVG_MIN_SIZE_ATR    = 0.03      # FVG เล็กมาก — M1 candles แทบไม่มี gap ใหญ่
 MAX_SL_ATR_MULT     = 5.0       # SL กว้างขึ้นได้ (RR 1:2 ชดเชย)
-SWING_CONFIRM_BARS  = 2         # ยืนยัน swing แค่ 2 bars
+SWING_CONFIRM_BARS  = 1         # ยืนยัน swing แค่ 1 bar — scalp mode
 
 # ── Execution ──────────────────────────────────────────────
 ORDER_MAGIC         = 615900
