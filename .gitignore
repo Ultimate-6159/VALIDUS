@@ -1,0 +1,21 @@
+# IDE / Editor
+.vs/
+.vscode/
+*.suo
+*.user
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+*.log.*
+
+# Environment
+.env
+venv/
