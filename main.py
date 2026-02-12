@@ -19,6 +19,7 @@ import pandas as pd
 import MetaTrader5 as mt5
 
 import config
+import trade_logger
 from strategy import Strategy, Signal
 from utils import log, line_notify, is_news_window, is_in_session
 
@@ -107,6 +108,11 @@ class Guardian:
                 "[STOP] Daily DD %.2f%% >= limit %.2f%% -- FORCE STOP",
                 dd_pct, config.DAILY_DD_LIMIT_PCT,
             )
+            trade_logger.log_decision(
+                symbol="ALL", event="DD_STOP",
+                pnl=info.equity - self._start_balance,
+                detail=f"DD {dd_pct:.2f}% >= limit {config.DAILY_DD_LIMIT_PCT:.1f}%",
+            )
             line_notify(
                 f"[STOP] Daily drawdown limit hit ({dd_pct:.2f}%). System stopped."
             )
@@ -175,7 +181,36 @@ class ExecutionMaster:
         lot = round(lot, 2)
         return lot
 
-    # ── Send market order ───────────────────────────────────
+    # ── ATR cache for trailing stop ───────────────────────
+    _atr_cache: dict = {}
+
+    @staticmethod
+    def _get_current_atr(symbol: str) -> float:
+        """Fetch current M1 ATR for trailing stop, cached for 60 s."""
+        now = time.time()
+        if symbol in ExecutionMaster._atr_cache:
+            val, ts = ExecutionMaster._atr_cache[symbol]
+            if now - ts < 60:
+                return val
+        rates = mt5.copy_rates_from_pos(
+            symbol, mt5.TIMEFRAME_M1, 0, config.TRAILING_ATR_PERIOD + 5,
+        )
+        if rates is None or len(rates) < config.TRAILING_ATR_PERIOD:
+            return 0.0
+        df = pd.DataFrame(rates)
+        prev_c = df["close"].shift(1)
+        tr = pd.concat([
+            df["high"] - df["low"],
+            (df["high"] - prev_c).abs(),
+            (df["low"] - prev_c).abs(),
+        ], axis=1).max(axis=1)
+        atr_val = float(tr.rolling(config.TRAILING_ATR_PERIOD).mean().iloc[-1])
+        if np.isnan(atr_val):
+            return 0.0
+        ExecutionMaster._atr_cache[symbol] = (atr_val, now)
+        return atr_val
+
+    # ── Send order (limit or market) ───────────────────────
     @staticmethod
     def open_order(symbol: str, signal: Signal) -> bool:
         sym = mt5.symbol_info(symbol)
@@ -192,6 +227,65 @@ class ExecutionMaster:
             log.warning("Spread %.1f > max %d pts — skipping", spread / sym.point, config.MAX_SPREAD_POINTS)
             return False
 
+        # ── Decide: limit or market ─────────────────────
+        use_limit = config.USE_LIMIT_ORDER
+        if use_limit:
+            if signal.direction == "BUY" and tick.ask <= signal.entry:
+                log.info("[ORDER] Ask %.5f <= entry %.5f — fallback to market.",
+                         tick.ask, signal.entry)
+                use_limit = False
+            elif signal.direction == "SELL" and tick.bid >= signal.entry:
+                log.info("[ORDER] Bid %.5f >= entry %.5f — fallback to market.",
+                         tick.bid, signal.entry)
+                use_limit = False
+
+        if use_limit:
+            # ── Limit Order at FVG mid ──────────────────────
+            price = signal.entry
+            sl_dist = abs(price - signal.sl)
+            lot = ExecutionMaster.calc_lot(symbol, sl_dist)
+            if signal.direction == "BUY":
+                order_type = mt5.ORDER_TYPE_BUY_LIMIT
+            else:
+                order_type = mt5.ORDER_TYPE_SELL_LIMIT
+
+            request = {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "symbol": symbol,
+                "volume": lot,
+                "type": order_type,
+                "price": round(price, sym.digits),
+                "sl": signal.sl,
+                "tp": signal.tp,
+                "deviation": 20,
+                "magic": config.ORDER_MAGIC,
+                "comment": config.ORDER_COMMENT,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_RETURN,
+            }
+            result = mt5.order_send(request)
+            if result is None:
+                log.error("[LIMIT] order_send returned None -- %s", mt5.last_error())
+                return False
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                log.error("[LIMIT] Failed [%d]: %s", result.retcode, result.comment)
+                return False
+            log.info(
+                "[LIMIT] %s %s %.2f lot @ %.5f  SL=%.5f  TP=%.5f  ticket=%d",
+                signal.direction, symbol, lot, price,
+                signal.sl, signal.tp, result.order,
+            )
+            trade_logger.log_decision(
+                symbol=symbol, event="LIMIT_PLACED", direction=signal.direction,
+                price=price, entry=signal.entry, sl=signal.sl, tp=signal.tp,
+                lot=lot, ticket=result.order,
+            )
+            line_notify(
+                f"[LIMIT] {signal.direction} {symbol} {lot} lot @ {price:.5f}"
+            )
+            return True
+
+        # ── Market Order (original logic) ───────────────
         if signal.direction == "BUY":
             order_type = mt5.ORDER_TYPE_BUY
             price = tick.ask
@@ -202,7 +296,6 @@ class ExecutionMaster:
         sl_dist = abs(price - signal.sl)
         lot = ExecutionMaster.calc_lot(symbol, sl_dist)
 
-        # Recalculate TP from actual fill price to maintain correct RR
         if signal.direction == "BUY":
             actual_tp = round(price + sl_dist * config.RISK_REWARD_RATIO, 5)
         else:
@@ -239,6 +332,11 @@ class ExecutionMaster:
             signal.direction, symbol, lot, price,
             signal.sl, actual_tp, result.order,
         )
+        trade_logger.log_decision(
+            symbol=symbol, event="MARKET_FILL", direction=signal.direction,
+            price=price, entry=signal.entry, sl=signal.sl, tp=actual_tp,
+            lot=lot, ticket=result.order,
+        )
         line_notify(
             f"[OPEN] {signal.direction} {symbol} {lot} lot @ {price:.5f}"
         )
@@ -247,7 +345,7 @@ class ExecutionMaster:
     # ── Breakeven management ────────────────────────────────
     @staticmethod
     def manage_positions() -> None:
-        """Move SL to breakeven when profit >= BREAKEVEN_PCT of TP distance."""
+        """Move SL to breakeven, then trail using ATR."""
         positions = mt5.positions_get()
         if positions is None:
             return
@@ -276,9 +374,8 @@ class ExecutionMaster:
             if tp_dist <= 0:
                 continue
 
-            # Check if profit reached breakeven threshold
+            # ── Phase 1: Breakeven ────────────────────────────
             if current_profit_dist >= tp_dist * config.BREAKEVEN_PCT:
-                # Only move if SL is not already at or beyond breakeven
                 should_move = False
                 if pos.type == mt5.ORDER_TYPE_BUY and pos.sl < be_price:
                     should_move = True
@@ -300,12 +397,104 @@ class ExecutionMaster:
                             "[BE] SL moved ticket=%d  new SL=%.5f",
                             pos.ticket, be_price,
                         )
+                        trade_logger.log_decision(
+                            symbol=pos.symbol, event="BE_MOVE",
+                            price=tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask,
+                            sl=be_price, ticket=pos.ticket,
+                            detail=f"profit_dist={current_profit_dist:.5f}",
+                        )
                     else:
                         log.warning(
                             "BE move failed ticket=%d: %s",
                             pos.ticket,
                             result.comment if result else mt5.last_error(),
                         )
+
+            # ── Phase 2: Trailing Stop (ATR-based) ────────────
+            if config.TRAILING_STOP_ENABLED:
+                sl_past_be = False
+                if pos.type == mt5.ORDER_TYPE_BUY and pos.sl >= be_price:
+                    sl_past_be = True
+                elif pos.type == mt5.ORDER_TYPE_SELL and 0 < pos.sl <= be_price:
+                    sl_past_be = True
+
+                if sl_past_be:
+                    atr_val = ExecutionMaster._get_current_atr(pos.symbol)
+                    if atr_val > 0:
+                        trail_dist = atr_val * config.TRAILING_ATR_MULT
+                        new_sl = None
+                        if pos.type == mt5.ORDER_TYPE_BUY:
+                            candidate = round(tick.bid - trail_dist, 5)
+                            if candidate > pos.sl:
+                                new_sl = candidate
+                        else:
+                            candidate = round(tick.ask + trail_dist, 5)
+                            if candidate < pos.sl:
+                                new_sl = candidate
+
+                        if new_sl is not None:
+                            request = {
+                                "action": mt5.TRADE_ACTION_SLTP,
+                                "position": pos.ticket,
+                                "symbol": pos.symbol,
+                                "sl": new_sl,
+                                "tp": pos.tp,
+                                "magic": config.ORDER_MAGIC,
+                            }
+                            result = mt5.order_send(request)
+                            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                                log.info(
+                                    "[TRAIL] SL trailed ticket=%d  new SL=%.5f (ATR=%.5f)",
+                                    pos.ticket, new_sl, atr_val,
+                                )
+                                trade_logger.log_decision(
+                                    symbol=pos.symbol, event="TRAIL_MOVE",
+                                    sl=new_sl, atr=atr_val, ticket=pos.ticket,
+                                    detail=f"old_sl={pos.sl:.5f} trail_dist={trail_dist:.5f}",
+                                )
+                            else:
+                                log.warning(
+                                    "[TRAIL] Failed ticket=%d: %s",
+                                    pos.ticket,
+                                    result.comment if result else mt5.last_error(),
+                                )
+
+    # ── Manage pending limit orders ─────────────────────
+    @staticmethod
+    def manage_pending_orders() -> None:
+        """Cancel expired pending limit orders."""
+        if not config.USE_LIMIT_ORDER:
+            return
+        orders = mt5.orders_get()
+        if orders is None:
+            return
+        now = time.time()
+        for order in orders:
+            if order.magic != config.ORDER_MAGIC:
+                continue
+            elapsed = now - order.time_setup
+            if elapsed > config.LIMIT_ORDER_EXPIRY_SEC:
+                request = {
+                    "action": mt5.TRADE_ACTION_REMOVE,
+                    "order": order.ticket,
+                }
+                result = mt5.order_send(request)
+                if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    log.info(
+                        "[LIMIT] Expired order cancelled: ticket=%d (%.0fs old)",
+                        order.ticket, elapsed,
+                    )
+                    trade_logger.log_decision(
+                        symbol=order.symbol, event="LIMIT_EXPIRED",
+                        ticket=order.ticket,
+                        detail=f"elapsed={elapsed:.0f}s limit={config.LIMIT_ORDER_EXPIRY_SEC}s",
+                    )
+                else:
+                    log.warning(
+                        "[LIMIT] Cancel failed ticket=%d: %s",
+                        order.ticket,
+                        result.comment if result else mt5.last_error(),
+                    )
 
     # ── Panic close all ─────────────────────────────────────
     @staticmethod
@@ -451,6 +640,7 @@ class ValidusBot:
 
                 # Position management (every tick)
                 self.executor.manage_positions()
+                self.executor.manage_pending_orders()
 
                 # Signal evaluation per symbol
                 for symbol in config.SYMBOLS:
@@ -503,11 +693,19 @@ class ValidusBot:
         if not is_in_session():
             log.info("[%s] Outside session (%02d:00-%02d:00 UTC) -- skipping.",
                      symbol, config.SESSION_START_UTC, config.SESSION_END_UTC)
+            trade_logger.log_decision(
+                symbol=symbol, event="SKIP_SESSION", price=bid,
+                detail=f"hour outside {config.SESSION_START_UTC}-{config.SESSION_END_UTC} UTC",
+            )
             return
 
         # News filter
         if is_news_window():
             log.info("[%s] News window active -- skipping.", symbol)
+            trade_logger.log_decision(
+                symbol=symbol, event="SKIP_NEWS", price=bid,
+                detail=f"buffer={config.NEWS_BUFFER_MIN}min",
+            )
             return
 
         # Signal cooldown
@@ -517,24 +715,46 @@ class ValidusBot:
             if bars_elapsed < config.SIGNAL_COOLDOWN_BARS:
                 log.info("[%s] Signal cooldown: %.0f/%d bars -- skipping.",
                          symbol, bars_elapsed, config.SIGNAL_COOLDOWN_BARS)
+                trade_logger.log_decision(
+                    symbol=symbol, event="SKIP_COOLDOWN", price=bid,
+                    detail=f"bars={bars_elapsed:.0f}/{config.SIGNAL_COOLDOWN_BARS}",
+                )
                 return
 
-        # Check max positions
+        # Check max positions (include pending orders)
         positions = mt5.positions_get(symbol=symbol) or []
         my_pos = [p for p in positions if p.magic == config.ORDER_MAGIC]
-        if len(my_pos) >= config.MAX_POSITIONS:
+        pending = mt5.orders_get(symbol=symbol) or []
+        my_pending = [o for o in pending if o.magic == config.ORDER_MAGIC]
+        if len(my_pos) + len(my_pending) >= config.MAX_POSITIONS:
             log.info("[%s] Max positions (%d) reached -- skipping.", symbol, config.MAX_POSITIONS)
+            trade_logger.log_decision(
+                symbol=symbol, event="SKIP_MAXPOS", price=bid,
+                detail=f"pos={len(my_pos)} pending={len(my_pending)} max={config.MAX_POSITIONS}",
+            )
             return
 
         df_m5 = fetch_ohlc(symbol, config.TIMEFRAME_HTF, bars=200)
         signal = self.strategy.evaluate(df_m1, df_m5)
+        ev = self.strategy.last_eval
         if signal is not None:
             log.info("[%s] >> SIGNAL FOUND: %s", symbol, signal)
+            trade_logger.log_decision(
+                symbol=symbol, event="SIGNAL", direction=signal.direction,
+                price=bid, entry=signal.entry, sl=signal.sl, tp=signal.tp,
+                atr=ev.get("atr", 0), bb_exp=ev.get("bb_exp", 0),
+                detail=ev.get("detail", ""),
+            )
             if self.executor.open_order(symbol, signal):
                 self._last_signal_time[symbol] = last_time
                 log.info("[%s] Signal cooldown set for %d bars.",
                          symbol, config.SIGNAL_COOLDOWN_BARS)
         else:
+            trade_logger.log_decision(
+                symbol=symbol, event="COND_FAIL", price=bid,
+                atr=ev.get("atr", 0), bb_exp=ev.get("bb_exp", 0),
+                detail=f"{ev.get('fail', '?')}: {ev.get('detail', '')}",
+            )
             log.info("[%s] No signal (conditions not met).", symbol)
 
 
@@ -630,6 +850,7 @@ def main() -> None:
     except KeyboardInterrupt:
         bot.stop()
     finally:
+        trade_logger.close()
         mt5.shutdown()
         loop.close()
         log.info("System shutdown complete.")

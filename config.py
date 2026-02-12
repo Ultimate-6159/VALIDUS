@@ -4,14 +4,14 @@
 # ============================================================
 
 # ── MT5 Connection ──────────────────────────────────────────
-MT5_LOGIN    = 0            # MT5 account number
-MT5_PASSWORD = ""           # MT5 account password
-MT5_SERVER   = ""           # e.g. "Exness-MT5Real"
+MT5_LOGIN=415146568
+MT5_PASSWORD="Ultimate@6159"
+MT5_SERVER="Exness-MT5Trial14"
 MT5_PATH     = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
 # ── Trading Pairs ───────────────────────────────────────────
 SYMBOLS = [
-    "XAUUSD",
+    "XAUUSDm",
     # "EURUSD",
     # "GBPUSD",
 ]
@@ -31,31 +31,31 @@ FORCE_TIER = ""  # "" = auto-detect | "MICRO" | "SMALL" | "MEDIUM" | "LARGE" | "
 
 ACCOUNT_TIERS = {
     # ── MICRO : $500 – $2,000 ───────────────────────────────
-    #   พอร์ตเล็ก ต้องระวังสูงสุด เปิดทีละ 1 ออเดอร์
-    #   Lot เล็ก แต่ Risk % พอเหมาะเพื่อให้พอร์ตโตได้
+    #   Ultra-Aggressive Scalping — เป้า 15%/วัน, 200%/เดือน
+    #   Risk 5% + RR 1:2.5 + Partial TP + Compounding
     "MICRO": {
         "min_balance":        500,
         "max_balance":      2_000,
-        "risk_pct":           1.0,      # 1% ต่อไม้ ($5–$20 ต่อเทรด)
+        "risk_pct":           5.0,      # 5% ต่อไม้ ($25 ที่ $500)
         "lot_size":          0.01,      # fallback lot
-        "max_positions":        1,      # เปิดทีละ 1 เท่านั้น — ห้ามเสี่ยง
-        "daily_dd_limit_pct":  3.0,     # หยุดเมื่อเสีย 3% ($15–$60)
-        "risk_reward_ratio":   1.5,     # RR 1:1.5
-        "breakeven_pct":      0.50,     # เลื่อน BE ที่ 50% ของ TP
-        "max_spread_points":    35,     # พอร์ตเล็กมักใช้ broker spread สูง
+        "max_positions":        5,      # เปิดได้ 5 ออเดอร์พร้อมกัน
+        "daily_dd_limit_pct": 18.0,     # DD limit 18% — ultra-aggressive
+        "risk_reward_ratio":   2.5,     # RR 1:2.5 — กำไรสูงเมื่อชนะ
+        "breakeven_pct":      0.35,     # เลื่อน BE เร็วมากที่ 35% TP
+        "max_spread_points":    45,
     },
     # ── SMALL : $2,001 – $10,000 ────────────────────────────
-    #   เริ่มมี room เปิดได้ 2 ออเดอร์ ยังคง conservative
+    #   ยังคง aggressive — ต่อยอด compounding จาก MICRO
     "SMALL": {
         "min_balance":      2_001,
         "max_balance":     10_000,
-        "risk_pct":           1.0,      # 1% ต่อไม้ ($20–$100)
+        "risk_pct":           4.0,      # 4% ต่อไม้ ($80–$400)
         "lot_size":          0.02,
-        "max_positions":        2,
-        "daily_dd_limit_pct":  3.0,     # หยุดเมื่อเสีย 3% ($60–$300)
-        "risk_reward_ratio":   1.5,
-        "breakeven_pct":      0.50,
-        "max_spread_points":    30,
+        "max_positions":        5,
+        "daily_dd_limit_pct": 15.0,     # DD limit 15%
+        "risk_reward_ratio":   2.5,     # RR 1:2.5
+        "breakeven_pct":      0.35,
+        "max_spread_points":    35,
     },
     # ── MEDIUM : $10,001 – $100,000 ─────────────────────────
     #   พอร์ตกลาง ลด risk % เพื่อความเสถียร
@@ -131,13 +131,13 @@ def get_tier_name(balance: float) -> str:
 # ════════════════════════════════════════════════════════════
 #  Active parameters (defaults — overridden at runtime by tier)
 # ════════════════════════════════════════════════════════════
-RISK_PCT            = 1.0
+RISK_PCT            = 5.0
 LOT_SIZE            = 0.01
-MAX_SPREAD_POINTS   = 30
-RISK_REWARD_RATIO   = 1.5
-BREAKEVEN_PCT       = 0.50
-MAX_POSITIONS       = 1
-DAILY_DD_LIMIT_PCT  = 3.0
+MAX_SPREAD_POINTS   = 45
+RISK_REWARD_RATIO   = 2.5
+BREAKEVEN_PCT       = 0.35
+MAX_POSITIONS       = 5
+DAILY_DD_LIMIT_PCT  = 18.0
 
 
 def apply_tier(balance: float) -> str:
@@ -165,17 +165,17 @@ def apply_tier(balance: float) -> str:
 
 # ── Volatility Filter (XAUUSD-optimized for M1) ────────────
 ATR_PERIOD          = 14
-ATR_THRESHOLD       = 0.80      # XAUUSD M1 ATR ปกติ ~0.5–3.0 กรองตลาดนิ่งออก
+ATR_THRESHOLD       = 0.25      # ลดเกณฑ์ให้เทรดได้ตลาด vol ปานกลาง
 BB_PERIOD           = 20
 BB_STD              = 2.0
-BB_EXPANSION_FACTOR = 1.3       # BB width ต้อง > ค่าเฉลี่ย × 1.3
+BB_EXPANSION_FACTOR = 1.05      # BB ขยายเล็กน้อยก็เข้าได้
 
 # ── Liquidity Sweep ────────────────────────────────────────
-SWING_LOOKBACK      = 20        # Bars to look back for swing H/L
-SWEEP_WICK_RATIO    = 0.6       # Min wick-to-body ratio for sweep candle
-FVG_MIN_SIZE_ATR    = 0.5       # FVG gap must be >= 0.5 × ATR
-MAX_SL_ATR_MULT     = 3.0       # SL distance > 3x ATR = skip (wick ยาวเกิน)
-SWING_CONFIRM_BARS  = 3         # Bars each side to confirm swing H/L structure
+SWING_LOOKBACK      = 10        # lookback สั้นขึ้น — จับ sweep เยอะขึ้น
+SWEEP_WICK_RATIO    = 0.20      # wick/body ต่ำก็ยอมรับ — sweep เบาๆ
+FVG_MIN_SIZE_ATR    = 0.10      # FVG เล็กก็เข้า — scalping mode
+MAX_SL_ATR_MULT     = 5.0       # SL กว้างขึ้นได้ (RR 1:2 ชดเชย)
+SWING_CONFIRM_BARS  = 2         # ยืนยัน swing แค่ 2 bars
 
 # ── Execution ──────────────────────────────────────────────
 ORDER_MAGIC         = 615900
@@ -199,17 +199,52 @@ DAILY_RESET_HOUR_UTC = 0         # Hour (UTC) to re-snapshot balance & re-apply 
 
 # ── Session Filter ──────────────────────────────────────────
 SESSION_FILTER_ENABLED = True
-SESSION_START_UTC      = 7       # London pre-open (07:00 UTC)
-SESSION_END_UTC        = 21      # NY close (21:00 UTC)
+SESSION_START_UTC      = 1       # ตั้งแต่ Asian session (01:00 UTC)
+SESSION_END_UTC        = 23      # ถึง NY close (23:00 UTC)
 
 # ── Signal Cooldown ─────────────────────────────────────────
-SIGNAL_COOLDOWN_BARS   = 5       # Min M1 bars between signals on same symbol
+SIGNAL_COOLDOWN_BARS   = 1       # แทบไม่มี cooldown — scalp ทุกสัญญาณ
 
 # ── HTF Trend Filter (M5 EMA) ──────────────────────────────
-HTF_EMA_PERIOD         = 50      # EMA period on M5 for trend direction
+HTF_EMA_PERIOD         = 20      # EMA20 ไว — trend flip เร็วขึ้น บล็อคสัญญาณน้อยลง
+
+# ── Trailing Stop (ATR-based) ───────────────────────────────
+TRAILING_STOP_ENABLED  = True
+TRAILING_ATR_PERIOD    = 14       # ATR period for trail distance calculation
+TRAILING_ATR_MULT      = 2.0     # Trail SL at price ± ATR × mult (ให้ room วิ่ง)
+
+# ── Limit Order Mode ────────────────────────────────────────
+USE_LIMIT_ORDER        = True     # True = limit at FVG mid | False = market order
+LIMIT_ORDER_EXPIRY_SEC = 600      # Cancel unfilled limit after 10 min (600s)
+
+# ── Multi-Timeframe FVG (M5 confirmation) ───────────────────
+MTF_FVG_ENABLED        = False    # ปิดไว้ก่อน — เพิ่มสัญญาณ (เปิดเมื่อพอร์ตใหญ่)
+MTF_FVG_LOOKBACK       = 20      # M5 bars to scan for recent FVG zones
+MTF_FVG_MIN_SIZE_ATR   = 0.3     # M5 FVG min gap as ATR multiplier
+
+# ── Backtest ────────────────────────────────────────────────
+BACKTEST_DATA_DIR      = "data"   # Directory for historical CSV files
+BACKTEST_INITIAL_BAL   = 10_000.0 # Starting balance for backtest
+BACKTEST_COMMISSION    = 0.0      # Commission per lot per side ($)
+BACKTEST_SLIPPAGE_PTS  = 2        # Simulated slippage in points
+BACKTEST_CONTRACT_SIZE = 100      # XAUUSD: 100 oz per standard lot
+BACKTEST_TICK_SIZE     = 0.01     # XAUUSD minimum price increment
+
+# ── Monte Carlo ─────────────────────────────────────────────
+MC_SIMULATIONS         = 1_000    # Number of Monte Carlo shuffles
+MC_CONFIDENCE_PCT      = 95       # Confidence interval percentage
+
+# ── Partial Take-Profit ─────────────────────────────────────
+PARTIAL_TP_ENABLED     = True     # ปิด 50% ที่ RR 1:1, ปล่อย 50% วิ่งถึง TP
+PARTIAL_TP_RATIO       = 0.50     # สัดส่วน lot ที่ปิด (50%)
+PARTIAL_TP_RR          = 1.0      # ปิดครึ่งแรกที่ RR 1:1
 
 # ── Logging ─────────────────────────────────────────────────
 LOG_FILE             = "validus.log"
 LOG_LEVEL            = "INFO"    # DEBUG | INFO | WARNING | ERROR
 LOG_MAX_BYTES        = 5_000_000 # 5 MB per log file
 LOG_BACKUP_COUNT     = 5         # Keep 5 rotated files (25 MB total max)
+
+# ── Decision Log (CSV สำหรับวิเคราะห์ย้อนหลัง) ─────────────
+DECISION_LOG_ENABLED = True      # เก็บ log ทุก decision ลง CSV
+DECISION_LOG_DIR     = "logs"    # โฟลเดอร์เก็บ decisions_YYYY-MM-DD.csv

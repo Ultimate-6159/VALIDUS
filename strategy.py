@@ -65,7 +65,15 @@ class Strategy:
     Encapsulates the full SMC entry logic.
     Call `evaluate(df_m1, df_m5)` each time a new M1 bar closes.
     Returns a `Signal` or None.
+
+    After evaluate(), read `self.last_eval` for structured decision data:
+      - atr, bb_exp, price: indicator values at evaluation time
+      - fail: which condition failed (None if signal generated)
+      - detail: human-readable explanation
     """
+
+    def __init__(self):
+        self.last_eval: dict = {}
 
     # ── Condition 1: Volatility check ───────────────────────
     @staticmethod
@@ -255,6 +263,46 @@ class Strategy:
                  last_close, config.HTF_EMA_PERIOD, last_ema, direction)
         return False
 
+    # ── Condition 5: Multi-timeframe FVG (M5 confirmation) ──
+    @staticmethod
+    def _m5_fvg_confirms(
+        df_m5: pd.DataFrame, direction: str, atr_value: float
+    ) -> bool:
+        """Check if recent M5 bars contain an FVG aligned with signal direction."""
+        if not config.MTF_FVG_ENABLED:
+            return True
+        if df_m5.empty or len(df_m5) < config.MTF_FVG_LOOKBACK + 3:
+            log.info("[MTF] Not enough M5 data (%d bars) — allowing.", len(df_m5))
+            return True
+
+        lookback = df_m5.iloc[-config.MTF_FVG_LOOKBACK:]
+        min_gap = atr_value * config.MTF_FVG_MIN_SIZE_ATR
+
+        for i in range(2, len(lookback)):
+            c1 = lookback.iloc[i - 2]
+            c3 = lookback.iloc[i]
+
+            if direction == "BUY":
+                gap = c3["low"] - c1["high"]
+                if gap >= min_gap:
+                    log.info(
+                        "[MTF] M5 bullish FVG found: gap=%.5f (min=%.5f) at bar %d",
+                        gap, min_gap, i,
+                    )
+                    return True
+            elif direction == "SELL":
+                gap = c1["low"] - c3["high"]
+                if gap >= min_gap:
+                    log.info(
+                        "[MTF] M5 bearish FVG found: gap=%.5f (min=%.5f) at bar %d",
+                        gap, min_gap, i,
+                    )
+                    return True
+
+        log.info("[MTF] No M5 FVG in last %d bars — rejecting %s.",
+                 config.MTF_FVG_LOOKBACK, direction)
+        return False
+
     # ── Main evaluation ─────────────────────────────────────
     def evaluate(
         self, df_m1: pd.DataFrame, df_m5: pd.DataFrame
@@ -262,31 +310,63 @@ class Strategy:
         """
         Run full strategy pipeline on latest data.
         Returns a Signal when all conditions align, else None.
+        Populates self.last_eval with decision metadata for logging.
         """
+        price = float(df_m1["close"].iloc[-1]) if not df_m1.empty else 0.0
+
+        # Pre-compute indicators for logging
+        atr_series = _atr(
+            df_m1["high"], df_m1["low"], df_m1["close"],
+            length=config.ATR_PERIOD,
+        )
+        current_atr = float(atr_series.iloc[-1]) if not atr_series.empty else 0.0
+
+        bb_upper, bb_mid, bb_lower = _bbands(
+            df_m1["close"], config.BB_PERIOD, config.BB_STD,
+        )
+        bb_width = float(bb_upper.iloc[-1] - bb_lower.iloc[-1]) if not bb_upper.empty else 0.0
+        bb_prev = float(bb_upper.iloc[-2] - bb_lower.iloc[-2]) if len(bb_upper) >= 2 else 0.0
+        bb_exp = bb_width / bb_prev if bb_prev > 0 else 0.0
+
+        self.last_eval = {
+            "atr": current_atr,
+            "bb_exp": bb_exp,
+            "price": price,
+            "fail": None,
+            "detail": "",
+        }
+
         # --- Condition 1: Volatility ---
         if not self._volatility_ok(df_m1):
+            self.last_eval["fail"] = "VOLATILITY"
+            self.last_eval["detail"] = f"ATR={current_atr:.5f} thr={config.ATR_THRESHOLD} BB_exp={bb_exp:.3f}"
             return None
 
         # --- Condition 2: Liquidity Sweep ---
         sweep = self._find_liquidity_sweep(df_m1)
         if sweep is None:
+            self.last_eval["fail"] = "SWEEP"
+            self.last_eval["detail"] = "No liquidity sweep detected"
             return None
-
-        # --- ATR for sizing ---
-        atr_series = _atr(
-            df_m1["high"], df_m1["low"], df_m1["close"],
-            length=config.ATR_PERIOD,
-        )
-        current_atr = atr_series.iloc[-1] if not atr_series.empty else 0
 
         # --- Condition 3: Displacement + FVG ---
         fvg = self._find_displacement_fvg(df_m1, sweep, current_atr)
         if fvg is None:
+            self.last_eval["fail"] = "FVG"
+            self.last_eval["detail"] = f"No displacement FVG after sweep@{sweep['sweep_level']:.5f}"
             return None
         log.info("[FVG] Displacement FVG confirmed: %s", fvg)
 
         # --- Condition 4: HTF trend filter ---
         if not self._htf_trend_ok(df_m5, fvg["direction"]):
+            self.last_eval["fail"] = "HTF_TREND"
+            self.last_eval["detail"] = f"M5 EMA{config.HTF_EMA_PERIOD} vs {fvg['direction']}"
+            return None
+
+        # --- Condition 5: Multi-timeframe FVG (M5) ---
+        if not self._m5_fvg_confirms(df_m5, fvg["direction"], current_atr):
+            self.last_eval["fail"] = "MTF_FVG"
+            self.last_eval["detail"] = f"No M5 FVG confirms {fvg['direction']}"
             return None
 
         # --- Build Signal ---
@@ -304,11 +384,15 @@ class Strategy:
             tp = entry - risk * config.RISK_REWARD_RATIO
 
         if risk <= 0:
+            self.last_eval["fail"] = "RISK_ZERO"
+            self.last_eval["detail"] = f"risk={risk:.5f}"
             log.info("[STRATEGY] Invalid risk distance (%.5f) -- skipping.", risk)
             return None
 
-        # --- Condition 5: Max SL distance ---
+        # --- Condition 6: Max SL distance ---
         if current_atr > 0 and risk > current_atr * config.MAX_SL_ATR_MULT:
+            self.last_eval["fail"] = "SL_TOO_WIDE"
+            self.last_eval["detail"] = f"risk={risk:.5f} > {config.MAX_SL_ATR_MULT}x ATR={current_atr * config.MAX_SL_ATR_MULT:.5f}"
             log.info(
                 "[STRATEGY] SL too wide: %.5f > %.1fx ATR (%.5f) -- skipping.",
                 risk, config.MAX_SL_ATR_MULT, current_atr * config.MAX_SL_ATR_MULT,
@@ -325,5 +409,7 @@ class Strategy:
             fvg_zone=(round(fvg["fvg_bottom"], 5), round(fvg["fvg_top"], 5)),
             reason=f"Sweep@{sweep['sweep_level']:.5f} -> FVG retrace",
         )
+        self.last_eval["fail"] = None
+        self.last_eval["detail"] = f"{direction} sweep@{sweep['sweep_level']:.5f} FVG={fvg['fvg_bottom']:.5f}-{fvg['fvg_top']:.5f}"
         log.info("[SIGNAL] Generated: %s", signal)
         return signal

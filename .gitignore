@@ -15,7 +15,12 @@ build/
 # Logs
 *.log
 *.log.*
+logs/
 
 # Environment
 .env
 venv/
+
+# Backtest data & results
+data/
+backtest_results/
