@@ -21,7 +21,7 @@ echo.
 REM ── Install dependencies ──────────────────────
 echo Installing Dependencies...
 pip install --upgrade pip
-pip install MetaTrader5 pandas pandas_ta numpy requests schedule
+pip install MetaTrader5 pandas numpy requests schedule
 if %errorlevel% neq 0 (
     echo ❌ pip install failed!
     pause

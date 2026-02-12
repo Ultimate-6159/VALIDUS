@@ -6,10 +6,30 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
 
 import config
 from utils import log
+
+
+# ── Manual indicators (no pandas_ta / numba needed) ─────────
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:
+    """Average True Range — pure pandas."""
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.rolling(window=length).mean()
+
+
+def _bbands(close: pd.Series, length: int = 20, std: float = 2.0):
+    """Bollinger Bands — returns (upper, mid, lower) as Series."""
+    mid = close.rolling(window=length).mean()
+    sd = close.rolling(window=length).std()
+    upper = mid + std * sd
+    lower = mid - std * sd
+    return upper, mid, lower
 
 
 # ── Data-class for a trade signal ───────────────────────────
@@ -51,23 +71,17 @@ class Strategy:
     @staticmethod
     def _volatility_ok(df: pd.DataFrame) -> bool:
         """Market must be volatile enough to trade."""
-        atr = ta.atr(
-            df["high"], df["low"], df["close"], length=config.ATR_PERIOD
-        )
-        if atr is None or atr.empty:
+        atr = _atr(df["high"], df["low"], df["close"], length=config.ATR_PERIOD)
+        if atr.empty or np.isnan(atr.iloc[-1]):
             return False
         current_atr = atr.iloc[-1]
         if current_atr < config.ATR_THRESHOLD:
             return False
 
         # Bollinger Band expansion check
-        bb = ta.bbands(
-            df["close"], length=config.BB_PERIOD, std=config.BB_STD
-        )
-        if bb is None or bb.empty:
+        bbu, _, bbl = _bbands(df["close"], length=config.BB_PERIOD, std=config.BB_STD)
+        if bbu.empty or np.isnan(bbu.iloc[-1]):
             return False
-        bbu = bb.iloc[:, 0]  # upper
-        bbl = bb.iloc[:, 2]  # lower
         width = bbu - bbl
         avg_width = width.rolling(config.BB_PERIOD).mean()
         if avg_width.iloc[-1] == 0:
@@ -186,11 +200,11 @@ class Strategy:
         log.info("🔍 Liquidity sweep detected: %s", sweep)
 
         # --- ATR for sizing ---
-        atr_series = ta.atr(
+        atr_series = _atr(
             df_m1["high"], df_m1["low"], df_m1["close"],
             length=config.ATR_PERIOD,
         )
-        current_atr = atr_series.iloc[-1] if atr_series is not None else 0
+        current_atr = atr_series.iloc[-1] if not atr_series.empty else 0
 
         # --- Condition 3: Displacement + FVG ---
         fvg = self._find_displacement_fvg(df_m1, sweep, current_atr)
