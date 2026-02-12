@@ -20,7 +20,7 @@ import MetaTrader5 as mt5
 
 import config
 from strategy import Strategy, Signal
-from utils import log, line_notify, is_news_window
+from utils import log, line_notify, is_news_window, is_in_session
 
 
 # ════════════════════════════════════════════════════════════
@@ -202,6 +202,16 @@ class ExecutionMaster:
         sl_dist = abs(price - signal.sl)
         lot = ExecutionMaster.calc_lot(symbol, sl_dist)
 
+        # Recalculate TP from actual fill price to maintain correct RR
+        if signal.direction == "BUY":
+            actual_tp = round(price + sl_dist * config.RISK_REWARD_RATIO, 5)
+        else:
+            actual_tp = round(price - sl_dist * config.RISK_REWARD_RATIO, 5)
+        log.info(
+            "[ORDER] TP recalc: signal_tp=%.5f -> actual_tp=%.5f (fill=%.5f SL=%.5f)",
+            signal.tp, actual_tp, price, signal.sl,
+        )
+
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
@@ -209,7 +219,7 @@ class ExecutionMaster:
             "type": order_type,
             "price": price,
             "sl": signal.sl,
-            "tp": signal.tp,
+            "tp": actual_tp,
             "deviation": 20,
             "magic": config.ORDER_MAGIC,
             "comment": config.ORDER_COMMENT,
@@ -218,16 +228,16 @@ class ExecutionMaster:
         }
         result = mt5.order_send(request)
         if result is None:
-            log.error("order_send returned None – %s", mt5.last_error())
+            log.error("[ORDER] order_send returned None -- %s", mt5.last_error())
             return False
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            log.error("Order failed [%d]: %s", result.retcode, result.comment)
+            log.error("[ORDER] Failed [%d]: %s", result.retcode, result.comment)
             return False
 
         log.info(
             "[OPEN] %s %s %.2f lot @ %.5f  SL=%.5f  TP=%.5f  ticket=%d",
             signal.direction, symbol, lot, price,
-            signal.sl, signal.tp, result.order,
+            signal.sl, actual_tp, result.order,
         )
         line_notify(
             f"[OPEN] {signal.direction} {symbol} {lot} lot @ {price:.5f}"
@@ -249,15 +259,19 @@ class ExecutionMaster:
             if tick is None:
                 continue
 
+            sym_info = mt5.symbol_info(pos.symbol)
+            if sym_info is None:
+                continue
+
             # Calculate distances
             if pos.type == mt5.ORDER_TYPE_BUY:
                 current_profit_dist = tick.bid - pos.price_open
                 tp_dist = pos.tp - pos.price_open if pos.tp > 0 else 0
-                be_price = pos.price_open + mt5.symbol_info(pos.symbol).spread * mt5.symbol_info(pos.symbol).point
+                be_price = pos.price_open + sym_info.spread * sym_info.point
             else:
                 current_profit_dist = pos.price_open - tick.ask
                 tp_dist = pos.price_open - pos.tp if pos.tp > 0 else 0
-                be_price = pos.price_open - mt5.symbol_info(pos.symbol).spread * mt5.symbol_info(pos.symbol).point
+                be_price = pos.price_open - sym_info.spread * sym_info.point
 
             if tp_dist <= 0:
                 continue
@@ -390,6 +404,7 @@ class ValidusBot:
         self.dashboard = Dashboard()
         self._running = False
         self._last_m1_time: dict[str, dt.datetime] = {}
+        self._last_signal_time: dict[str, dt.datetime] = {}
         self._heartbeat_interval = 60   # log heartbeat every 60 seconds
         self._last_heartbeat: float = 0
         self._scan_count: int = 0
@@ -484,10 +499,25 @@ class ValidusBot:
         bid = tick.bid if tick else 0
         log.info("[%s] New M1 bar %s | Bid: %.2f -- scanning...", symbol, last_time, bid)
 
+        # Session filter
+        if not is_in_session():
+            log.info("[%s] Outside session (%02d:00-%02d:00 UTC) -- skipping.",
+                     symbol, config.SESSION_START_UTC, config.SESSION_END_UTC)
+            return
+
         # News filter
         if is_news_window():
             log.info("[%s] News window active -- skipping.", symbol)
             return
+
+        # Signal cooldown
+        last_sig_time = self._last_signal_time.get(symbol)
+        if last_sig_time is not None:
+            bars_elapsed = (last_time - last_sig_time).total_seconds() / 60
+            if bars_elapsed < config.SIGNAL_COOLDOWN_BARS:
+                log.info("[%s] Signal cooldown: %.0f/%d bars -- skipping.",
+                         symbol, bars_elapsed, config.SIGNAL_COOLDOWN_BARS)
+                return
 
         # Check max positions
         positions = mt5.positions_get(symbol=symbol) or []
@@ -500,7 +530,10 @@ class ValidusBot:
         signal = self.strategy.evaluate(df_m1, df_m5)
         if signal is not None:
             log.info("[%s] >> SIGNAL FOUND: %s", symbol, signal)
-            self.executor.open_order(symbol, signal)
+            if self.executor.open_order(symbol, signal):
+                self._last_signal_time[symbol] = last_time
+                log.info("[%s] Signal cooldown set for %d bars.",
+                         symbol, config.SIGNAL_COOLDOWN_BARS)
         else:
             log.info("[%s] No signal (conditions not met).", symbol)
 

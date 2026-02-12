@@ -165,7 +165,7 @@ def apply_tier(balance: float) -> str:
 
 # ── Volatility Filter (XAUUSD-optimized for M1) ────────────
 ATR_PERIOD          = 14
-ATR_THRESHOLD       = 0.50      # XAUUSD M1 ATR ปกติ ~0.5–3.0 ถ้าต่ำกว่านี้ = ตลาดนิ่ง
+ATR_THRESHOLD       = 0.80      # XAUUSD M1 ATR ปกติ ~0.5–3.0 กรองตลาดนิ่งออก
 BB_PERIOD           = 20
 BB_STD              = 2.0
 BB_EXPANSION_FACTOR = 1.3       # BB width ต้อง > ค่าเฉลี่ย × 1.3
@@ -174,6 +174,8 @@ BB_EXPANSION_FACTOR = 1.3       # BB width ต้อง > ค่าเฉลี�
 SWING_LOOKBACK      = 20        # Bars to look back for swing H/L
 SWEEP_WICK_RATIO    = 0.6       # Min wick-to-body ratio for sweep candle
 FVG_MIN_SIZE_ATR    = 0.5       # FVG gap must be >= 0.5 × ATR
+MAX_SL_ATR_MULT     = 3.0       # SL distance > 3x ATR = skip (wick ยาวเกิน)
+SWING_CONFIRM_BARS  = 3         # Bars each side to confirm swing H/L structure
 
 # ── Execution ──────────────────────────────────────────────
 ORDER_MAGIC         = 615900
@@ -183,6 +185,7 @@ POSITION_CHECK_SEC  = 0.5       # Seconds between position management ticks
 # ── News Filter ─────────────────────────────────────────────
 NEWS_FILTER_ENABLED = True
 NEWS_BUFFER_MIN     = 15        # Minutes before/after red news to pause
+NEWS_CURRENCIES     = ["USD"]   # Only filter these currencies (relevant to XAUUSD)
 
 # ── Notifications (Line Notify) ─────────────────────────────
 LINE_NOTIFY_TOKEN   = ""        # Leave blank to disable
@@ -193,6 +196,17 @@ AUTO_START           = True      # True = start trading immediately (VPS mode)
 HEADLESS             = False     # True = no dashboard clear (better for log files)
 AUTO_RESTART_DELAY   = 10        # Seconds to wait before auto-restart after crash
 DAILY_RESET_HOUR_UTC = 0         # Hour (UTC) to re-snapshot balance & re-apply tier
+
+# ── Session Filter ──────────────────────────────────────────
+SESSION_FILTER_ENABLED = True
+SESSION_START_UTC      = 7       # London pre-open (07:00 UTC)
+SESSION_END_UTC        = 21      # NY close (21:00 UTC)
+
+# ── Signal Cooldown ─────────────────────────────────────────
+SIGNAL_COOLDOWN_BARS   = 5       # Min M1 bars between signals on same symbol
+
+# ── HTF Trend Filter (M5 EMA) ──────────────────────────────
+HTF_EMA_PERIOD         = 50      # EMA period on M5 for trend direction
 
 # ── Logging ─────────────────────────────────────────────────
 LOG_FILE             = "validus.log"

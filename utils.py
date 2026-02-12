@@ -72,6 +72,7 @@ def _fetch_news() -> list[dict]:
             e for e in events
             if e.get("impact", "").lower() == "high"
             and _parse_ff_date(e.get("date", "")) == today
+            and e.get("country", "").upper() in config.NEWS_CURRENCIES
         ]
         _news_cache_date = today
     except Exception as exc:
@@ -106,6 +107,20 @@ def is_news_window() -> bool:
         except Exception:
             continue
     return False
+
+
+# ── Session Filter ──────────────────────────────────────────
+def is_in_session() -> bool:
+    """Return True if current UTC hour is within the configured trading session."""
+    if not config.SESSION_FILTER_ENABLED:
+        return True
+    hour = dt.datetime.now(dt.timezone.utc).hour
+    start = config.SESSION_START_UTC
+    end = config.SESSION_END_UTC
+    if start <= end:
+        return start <= hour < end
+    else:
+        return hour >= start or hour < end
 
 
 # ── Misc helpers ─────────────────────────────────────────────
