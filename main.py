@@ -390,9 +390,10 @@ class ValidusBot:
         self.dashboard = Dashboard()
         self._running = False
         self._last_m1_time: dict[str, dt.datetime] = {}
-        self._heartbeat_interval = 300  # log heartbeat every 5 minutes
+        self._heartbeat_interval = 60   # log heartbeat every 60 seconds
         self._last_heartbeat: float = 0
         self._scan_count: int = 0
+        self._loop_started_logged: bool = False
 
     # ── Start ───────────────────────────────────────────────
     async def start(self) -> None:
@@ -418,6 +419,12 @@ class ValidusBot:
         self._last_heartbeat = time.time()
         while self._running:
             try:
+                # Log once that the loop is alive
+                if not self._loop_started_logged:
+                    log.info("[LOOP] Main loop running. Symbols: %s | Checking every %.1fs",
+                             config.SYMBOLS, config.POSITION_CHECK_SEC)
+                    self._loop_started_logged = True
+
                 # Guardian checks
                 if not self.guardian.ensure_connection():
                     await asyncio.sleep(5)
@@ -434,7 +441,7 @@ class ValidusBot:
                 for symbol in config.SYMBOLS:
                     await self._process_symbol(symbol)
 
-                # Heartbeat log (every 5 minutes)
+                # Heartbeat log (every 60 seconds)
                 now = time.time()
                 if now - self._last_heartbeat >= self._heartbeat_interval:
                     acct = mt5.account_info()
@@ -463,14 +470,19 @@ class ValidusBot:
     async def _process_symbol(self, symbol: str) -> None:
         df_m1 = fetch_ohlc(symbol, config.TIMEFRAME_ENTRY, bars=200)
         if df_m1.empty:
+            log.warning("[%s] M1 data empty -- check Market Watch or symbol name.", symbol)
             return
 
         # Only evaluate when a new M1 bar closes
         last_time = df_m1.index[-1]
         if self._last_m1_time.get(symbol) == last_time:
-            return
+            return  # same bar, waiting for next M1 close (normal)
         self._last_m1_time[symbol] = last_time
         self._scan_count += 1
+
+        tick = mt5.symbol_info_tick(symbol)
+        bid = tick.bid if tick else 0
+        log.info("[%s] New M1 bar %s | Bid: %.2f -- scanning...", symbol, last_time, bid)
 
         # News filter
         if is_news_window():
@@ -481,6 +493,7 @@ class ValidusBot:
         positions = mt5.positions_get(symbol=symbol) or []
         my_pos = [p for p in positions if p.magic == config.ORDER_MAGIC]
         if len(my_pos) >= config.MAX_POSITIONS:
+            log.info("[%s] Max positions (%d) reached -- skipping.", symbol, config.MAX_POSITIONS)
             return
 
         df_m5 = fetch_ohlc(symbol, config.TIMEFRAME_HTF, bars=200)
@@ -489,7 +502,7 @@ class ValidusBot:
             log.info("[%s] >> SIGNAL FOUND: %s", symbol, signal)
             self.executor.open_order(symbol, signal)
         else:
-            log.info("[%s] M1 bar %s scanned -- no signal.", symbol, last_time)
+            log.info("[%s] No signal (conditions not met).", symbol)
 
 
 # ════════════════════════════════════════════════════════════
