@@ -29,10 +29,11 @@ SYMBOLS = ["XAUUSDm", "EURUSDm", "GBPUSDm"]   # Multi-symbol list
 MAGIC   = 615901                                  # Unique magic number
 
 # Per-symbol settings (Gold vs Forex need different padding/spread)
+# NOTE: XAUUSDm uses 3 decimals (point=0.001), Forex uses 5 decimals (point=0.00001)
 SYMBOL_SETTINGS = {
-    "XAUUSDm":  {"sl_pad_pts": 20, "max_spread_pts": 35, "be_offset_pts": 10},
-    "EURUSDm":  {"sl_pad_pts":  5, "max_spread_pts": 15, "be_offset_pts":  3},
-    "GBPUSDm":  {"sl_pad_pts":  5, "max_spread_pts": 20, "be_offset_pts":  3},
+    "XAUUSDm":  {"sl_pad_pts": 200, "max_spread_pts": 450, "be_offset_pts": 100},
+    "EURUSDm":  {"sl_pad_pts":   5, "max_spread_pts":  15, "be_offset_pts":   3},
+    "GBPUSDm":  {"sl_pad_pts":   5, "max_spread_pts":  20, "be_offset_pts":   3},
 }
 DEFAULT_SETTINGS = {"sl_pad_pts": 10, "max_spread_pts": 20, "be_offset_pts": 5}
 
@@ -189,9 +190,10 @@ def check_signal(df_m1: pd.DataFrame, df_m15: pd.DataFrame) -> dict | None:
         return None
 
     # ── Step 1: M15 Trend Filter ────────────────────────────
+    # Use iloc[-2] to skip the current forming bar (bar 0)
     ema_m15 = ema(df_m15["close"], EMA_PERIOD)
-    last_close_m15 = df_m15["close"].iloc[-1]
-    last_ema_m15 = ema_m15.iloc[-1]
+    last_close_m15 = df_m15["close"].iloc[-2]
+    last_ema_m15 = ema_m15.iloc[-2]
 
     if last_close_m15 > last_ema_m15:
         trend = "UP"
@@ -201,13 +203,13 @@ def check_signal(df_m1: pd.DataFrame, df_m15: pd.DataFrame) -> dict | None:
         return None  # exactly on EMA — skip
 
     # ── Step 2: Find fractal swing levels on M1 ─────────────
-    # Use last 30 bars for swing detection (excluding current candle)
-    lookback = df_m1.iloc[-30:]
+    # Use last 30 CLOSED bars (skip bar 0 = current forming candle)
+    lookback = df_m1.iloc[-31:-1]
     swing_high = find_recent_swing_high(lookback)
     swing_low = find_recent_swing_low(lookback)
 
     # ── Step 3: Check last closed candle for sweep ──────────
-    candle = df_m1.iloc[-1]  # last closed M1 candle
+    candle = df_m1.iloc[-2]  # last closed M1 candle (skip bar 0)
 
     # ── BUY Signal: sweep below swing low + reject ──────────
     if trend == "UP" and swing_low is not None:
@@ -524,10 +526,10 @@ def main() -> None:
                     else:
                         log.warning("[FAIL] %s Trade execution failed.", symbol)
                 else:
-                    ema_val = ema(df_m15["close"], EMA_PERIOD).iloc[-1] if not df_m15.empty else 0
+                    ema_val = ema(df_m15["close"], EMA_PERIOD).iloc[-2] if len(df_m15) > 1 else 0
                     trend_dir = "UP" if bid > ema_val else "DOWN"
-                    sh = find_recent_swing_high(df_m1.iloc[-30:])
-                    sl = find_recent_swing_low(df_m1.iloc[-30:])
+                    sh = find_recent_swing_high(df_m1.iloc[-31:-1])
+                    sl = find_recent_swing_low(df_m1.iloc[-31:-1])
                     log.info(
                         "[NO_SIGNAL] %s trend=%s ema15=%.5f | swing_H=%.5f swing_L=%.5f",
                         symbol, trend_dir, ema_val,
