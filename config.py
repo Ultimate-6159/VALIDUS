@@ -168,12 +168,12 @@ ATR_PERIOD          = 14
 ATR_THRESHOLD       = 0.00005   # ATR/price ratio (0.005%) — universal ทุก symbol
 BB_PERIOD           = 20
 BB_STD              = 2.0
-BB_EXPANSION_FACTOR = 0.90      # BB ≥90% ของ avg width ก็พอ — ไม่ต้อง expand
+BB_EXPANSION_FACTOR = 0.70      # BB ≥70% ของ avg width — ผ่านง่ายขึ้นช่วงเปลี่ยน session
 
 # ── Liquidity Sweep ────────────────────────────────────────
 SWING_LOOKBACK      = 15        # lookback กว้างขึ้น — เจอ swing level มากขึ้น
 SWEEP_WICK_RATIO    = 0.10      # wick/body ต่ำมาก — จับ sweep เบาๆ บน M1
-FVG_MIN_SIZE_ATR    = 0.03      # FVG เล็กมาก — M1 candles แทบไม่มี gap ใหญ่
+FVG_MIN_SIZE_ATR    = -0.5      # อนุญาต overlap ≤0.5×ATR — M1 แทบไม่มี true gap
 MAX_SL_ATR_MULT     = 5.0       # SL กว้างขึ้นได้ (RR 1:2 ชดเชย)
 SWING_CONFIRM_BARS  = 1         # ยืนยัน swing แค่ 1 bar — scalp mode
 
@@ -206,7 +206,7 @@ SESSION_END_UTC        = 23      # ถึง NY close (23:00 UTC)
 SIGNAL_COOLDOWN_BARS   = 1       # แทบไม่มี cooldown — scalp ทุกสัญญาณ
 
 # ── HTF Trend Filter (M5 EMA) ──────────────────────────────
-HTF_EMA_PERIOD         = 20      # EMA20 ไว — trend flip เร็วขึ้น บล็อคสัญญาณน้อยลง
+HTF_EMA_PERIOD         = 50      # EMA50 ช้าลง — ไม่บล็อคสัญญาณบ่อยช่วง choppy
 
 # ── Trailing Stop (ATR-based) ───────────────────────────────
 TRAILING_STOP_ENABLED  = True

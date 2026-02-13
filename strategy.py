@@ -226,7 +226,9 @@ class Strategy:
             log.info("[FVG] Bearish gap: c1_low=%.5f - c3_high=%.5f = %.5f (min=%.5f)",
                      c1["low"], c3["high"], gap, min_gap)
             if gap >= min_gap:
-                return {"direction": "SELL", "fvg_top": c1["low"], "fvg_bottom": c3["high"]}
+                fvg_top = max(c1["low"], c3["high"])
+                fvg_bottom = min(c1["low"], c3["high"])
+                return {"direction": "SELL", "fvg_top": fvg_top, "fvg_bottom": fvg_bottom}
             log.info("[FVG] Gap too small -- no FVG.")
 
         elif sweep["type"] == "BULLISH_SWEEP":
@@ -238,7 +240,9 @@ class Strategy:
             log.info("[FVG] Bullish gap: c3_low=%.5f - c1_high=%.5f = %.5f (min=%.5f)",
                      c3["low"], c1["high"], gap, min_gap)
             if gap >= min_gap:
-                return {"direction": "BUY", "fvg_top": c3["low"], "fvg_bottom": c1["high"]}
+                fvg_top = max(c3["low"], c1["high"])
+                fvg_bottom = min(c3["low"], c1["high"])
+                return {"direction": "BUY", "fvg_top": fvg_top, "fvg_bottom": fvg_bottom}
             log.info("[FVG] Gap too small -- no FVG.")
 
         return None
