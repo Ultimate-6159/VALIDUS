@@ -31,11 +31,11 @@ MAGIC   = 615901                                  # Unique magic number
 # Per-symbol settings (Gold vs Forex need different padding/spread)
 # NOTE: XAUUSDm uses 3 decimals (point=0.001), Forex uses 5 decimals (point=0.00001)
 SYMBOL_SETTINGS = {
-    "XAUUSDm":  {"sl_pad_pts": 200, "max_spread_pts": 450, "be_offset_pts": 100},
-    "EURUSDm":  {"sl_pad_pts":   5, "max_spread_pts":  15, "be_offset_pts":   3},
-    "GBPUSDm":  {"sl_pad_pts":   5, "max_spread_pts":  20, "be_offset_pts":   3},
+    "XAUUSDm":  {"sl_pad_pts": 200, "max_spread_pts": 450, "be_offset_pts": 100, "trail_pts": 150},
+    "EURUSDm":  {"sl_pad_pts":   5, "max_spread_pts":  15, "be_offset_pts":   3, "trail_pts":   5},
+    "GBPUSDm":  {"sl_pad_pts":   5, "max_spread_pts":  20, "be_offset_pts":   3, "trail_pts":   5},
 }
-DEFAULT_SETTINGS = {"sl_pad_pts": 10, "max_spread_pts": 20, "be_offset_pts": 5}
+DEFAULT_SETTINGS = {"sl_pad_pts": 10, "max_spread_pts": 20, "be_offset_pts": 5, "trail_pts": 8}
 
 # Strategy
 EMA_PERIOD   = 50                 # EMA period on M15 for trend filter
@@ -351,10 +351,10 @@ def _sym_setting(symbol: str, key: str):
 
 
 # ════════════════════════════════════════════════════════════
-#  Position Management: Breakeven
+#  Position Management: Breakeven + Trailing Stop
 # ════════════════════════════════════════════════════════════
 def manage_breakeven() -> None:
-    """Move SL to breakeven when profit >= 1:1 of risk (all symbols)."""
+    """Move SL to breakeven when profit >= 1:1 of risk, then trail."""
     for symbol in SYMBOLS:
         positions = mt5.positions_get(symbol=symbol)
         if not positions:
@@ -370,27 +370,40 @@ def manage_breakeven() -> None:
                 continue
 
             offset = _sym_setting(pos.symbol, "be_offset_pts") * sym.point
+            trail  = _sym_setting(pos.symbol, "trail_pts") * sym.point
 
             if pos.type == mt5.ORDER_TYPE_BUY:
                 risk_dist = pos.price_open - pos.sl
                 current_profit = tick.bid - pos.price_open
                 be_price = pos.price_open + offset
-                if pos.sl >= be_price:
-                    continue
+
                 if risk_dist > 0 and current_profit >= risk_dist * BE_RATIO:
-                    _move_sl(pos, be_price, sym)
+                    if pos.sl >= be_price:
+                        # Phase 2: Trail — move SL up behind price
+                        trail_sl = round(tick.bid - trail, sym.digits)
+                        if trail_sl > pos.sl:
+                            _move_sl(pos, trail_sl, sym, tag="TRAIL")
+                    else:
+                        # Phase 1: Move to breakeven
+                        _move_sl(pos, be_price, sym, tag="BE")
 
             elif pos.type == mt5.ORDER_TYPE_SELL:
                 risk_dist = pos.sl - pos.price_open
                 current_profit = pos.price_open - tick.ask
                 be_price = pos.price_open - offset
-                if pos.sl <= be_price and pos.sl > 0:
-                    continue
+
                 if risk_dist > 0 and current_profit >= risk_dist * BE_RATIO:
-                    _move_sl(pos, be_price, sym)
+                    if pos.sl <= be_price and pos.sl > 0:
+                        # Phase 2: Trail — move SL down behind price
+                        trail_sl = round(tick.ask + trail, sym.digits)
+                        if trail_sl < pos.sl:
+                            _move_sl(pos, trail_sl, sym, tag="TRAIL")
+                    else:
+                        # Phase 1: Move to breakeven
+                        _move_sl(pos, be_price, sym, tag="BE")
 
 
-def _move_sl(pos, new_sl: float, sym) -> None:
+def _move_sl(pos, new_sl: float, sym, tag: str = "BE") -> None:
     request = {
         "action":   mt5.TRADE_ACTION_SLTP,
         "position": pos.ticket,
@@ -401,10 +414,10 @@ def _move_sl(pos, new_sl: float, sym) -> None:
     }
     result = mt5.order_send(request)
     if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-        log.info("[BE] SL → %.2f for ticket=%d", new_sl, pos.ticket)
+        log.info("[%s] %s SL → %.5f for ticket=%d", tag, pos.symbol, new_sl, pos.ticket)
     else:
         comment = result.comment if result else str(mt5.last_error())
-        log.warning("[BE] Move failed ticket=%d: %s", pos.ticket, comment)
+        log.warning("[%s] Move failed ticket=%d: %s", tag, pos.ticket, comment)
 
 
 # ════════════════════════════════════════════════════════════
