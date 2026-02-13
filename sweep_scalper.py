@@ -25,26 +25,31 @@ MT5_PASSWORD = "Ultimate@6159"
 MT5_SERVER   = "Exness-MT5Trial14"
 MT5_PATH     = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
-SYMBOL       = "XAUUSDm"          # Broker-specific symbol name
-MAGIC        = 615901             # Unique magic number (different from VALIDUS)
+SYMBOLS = ["XAUUSDm", "EURUSDm", "GBPUSDm"]   # Multi-symbol list
+MAGIC   = 615901                                  # Unique magic number
+
+# Per-symbol settings (Gold vs Forex need different padding/spread)
+SYMBOL_SETTINGS = {
+    "XAUUSDm":  {"sl_pad_pts": 20, "max_spread_pts": 35, "be_offset_pts": 10},
+    "EURUSDm":  {"sl_pad_pts":  5, "max_spread_pts": 15, "be_offset_pts":  3},
+    "GBPUSDm":  {"sl_pad_pts":  5, "max_spread_pts": 20, "be_offset_pts":  3},
+}
+DEFAULT_SETTINGS = {"sl_pad_pts": 10, "max_spread_pts": 20, "be_offset_pts": 5}
 
 # Strategy
 EMA_PERIOD   = 50                 # EMA period on M15 for trend filter
 FRACTAL_N    = 1                  # Fractal detection: 1 left + 1 right candle
-SL_PAD_PTS   = 20                 # Extra padding on SL in points (Gold)
 
 # Money Management
 RISK_PCT     = 3.0                # Risk 3% of balance per trade
 RR_RATIO     = 2.0                # Risk:Reward = 1:2
 MIN_LOT      = 0.01
-MAX_TRADES   = 1                  # Only 1 open trade at a time
+MAX_TRADES_PER_SYMBOL = 1         # Max 1 open trade per symbol
 
 # Breakeven
 BE_RATIO     = 1.0                # Move SL to BE when profit >= 1x risk
-BE_OFFSET_PTS = 10                # +10 points past entry to cover commissions
 
 # Safety Filters
-MAX_SPREAD_PTS  = 35              # Max spread in points (3.5 pips)
 SESSION_START_H = 8               # Server time hour (08:00)
 SESSION_END_H   = 22              # Server time hour (22:00)
 
@@ -274,14 +279,15 @@ def execute_trade(symbol: str, signal: dict) -> bool:
         log.error("[EXEC] Symbol info unavailable for %s", symbol)
         return False
 
-    # ── Spread check ────────────────────────────────────────
+    # ── Spread check (per-symbol) ────────────────────────────
+    max_spread = _sym_setting(symbol, "max_spread_pts")
     spread_pts = (tick.ask - tick.bid) / sym.point
-    if spread_pts > MAX_SPREAD_PTS:
-        log.warning("[EXEC] Spread %.1f > max %d pts — skipping", spread_pts, MAX_SPREAD_PTS)
+    if spread_pts > max_spread:
+        log.warning("[EXEC] %s Spread %.1f > max %d pts — skipping", symbol, spread_pts, max_spread)
         return False
 
     direction = signal["direction"]
-    pad = SL_PAD_PTS * sym.point  # convert points to price
+    pad = _sym_setting(symbol, "sl_pad_pts") * sym.point  # per-symbol padding
 
     if direction == "BUY":
         price = tick.ask
@@ -335,43 +341,51 @@ def execute_trade(symbol: str, signal: dict) -> bool:
 
 
 # ════════════════════════════════════════════════════════════
+#  Helpers
+# ════════════════════════════════════════════════════════════
+def _sym_setting(symbol: str, key: str):
+    """Get per-symbol setting with fallback to DEFAULT_SETTINGS."""
+    return SYMBOL_SETTINGS.get(symbol, DEFAULT_SETTINGS).get(key, DEFAULT_SETTINGS[key])
+
+
+# ════════════════════════════════════════════════════════════
 #  Position Management: Breakeven
 # ════════════════════════════════════════════════════════════
 def manage_breakeven() -> None:
-    """Move SL to breakeven (+10 pts) when profit >= 1:1 of risk."""
-    positions = mt5.positions_get(symbol=SYMBOL)
-    if not positions:
-        return
-
-    for pos in positions:
-        if pos.magic != MAGIC:
+    """Move SL to breakeven when profit >= 1:1 of risk (all symbols)."""
+    for symbol in SYMBOLS:
+        positions = mt5.positions_get(symbol=symbol)
+        if not positions:
             continue
 
-        sym = mt5.symbol_info(pos.symbol)
-        tick = mt5.symbol_info_tick(pos.symbol)
-        if sym is None or tick is None:
-            continue
-
-        offset = BE_OFFSET_PTS * sym.point
-
-        if pos.type == mt5.ORDER_TYPE_BUY:
-            risk_dist = pos.price_open - pos.sl
-            current_profit = tick.bid - pos.price_open
-            be_price = pos.price_open + offset
-            # Already at or past breakeven?
-            if pos.sl >= be_price:
+        for pos in positions:
+            if pos.magic != MAGIC:
                 continue
-            if risk_dist > 0 and current_profit >= risk_dist * BE_RATIO:
-                _move_sl(pos, be_price, sym)
 
-        elif pos.type == mt5.ORDER_TYPE_SELL:
-            risk_dist = pos.sl - pos.price_open
-            current_profit = pos.price_open - tick.ask
-            be_price = pos.price_open - offset
-            if pos.sl <= be_price and pos.sl > 0:
+            sym = mt5.symbol_info(pos.symbol)
+            tick = mt5.symbol_info_tick(pos.symbol)
+            if sym is None or tick is None:
                 continue
-            if risk_dist > 0 and current_profit >= risk_dist * BE_RATIO:
-                _move_sl(pos, be_price, sym)
+
+            offset = _sym_setting(pos.symbol, "be_offset_pts") * sym.point
+
+            if pos.type == mt5.ORDER_TYPE_BUY:
+                risk_dist = pos.price_open - pos.sl
+                current_profit = tick.bid - pos.price_open
+                be_price = pos.price_open + offset
+                if pos.sl >= be_price:
+                    continue
+                if risk_dist > 0 and current_profit >= risk_dist * BE_RATIO:
+                    _move_sl(pos, be_price, sym)
+
+            elif pos.type == mt5.ORDER_TYPE_SELL:
+                risk_dist = pos.sl - pos.price_open
+                current_profit = pos.price_open - tick.ask
+                be_price = pos.price_open - offset
+                if pos.sl <= be_price and pos.sl > 0:
+                    continue
+                if risk_dist > 0 and current_profit >= risk_dist * BE_RATIO:
+                    _move_sl(pos, be_price, sym)
 
 
 def _move_sl(pos, new_sl: float, sym) -> None:
@@ -396,23 +410,29 @@ def _move_sl(pos, new_sl: float, sym) -> None:
 # ════════════════════════════════════════════════════════════
 def is_in_session() -> bool:
     """Check if current server time is within trading hours."""
-    tick = mt5.symbol_info_tick(SYMBOL)
-    if tick is None:
-        return False
-    # MT5 tick.time is server time as unix timestamp
-    server_time = dt.datetime.utcfromtimestamp(tick.time)
-    hour = server_time.hour
-    return SESSION_START_H <= hour < SESSION_END_H
+    for symbol in SYMBOLS:
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is not None:
+            server_time = dt.datetime.utcfromtimestamp(tick.time)
+            hour = server_time.hour
+            return SESSION_START_H <= hour < SESSION_END_H
+    return False
 
 
 # ════════════════════════════════════════════════════════════
 #  Safety: Max Open Trades
 # ════════════════════════════════════════════════════════════
-def count_my_positions() -> int:
-    positions = mt5.positions_get(symbol=SYMBOL)
+def count_my_positions(symbol: str) -> int:
+    """Count open positions for a specific symbol with our MAGIC."""
+    positions = mt5.positions_get(symbol=symbol)
     if not positions:
         return 0
     return sum(1 for p in positions if p.magic == MAGIC)
+
+
+def count_all_positions() -> int:
+    """Count total open positions across all symbols with our MAGIC."""
+    return sum(count_my_positions(s) for s in SYMBOLS)
 
 
 # ════════════════════════════════════════════════════════════
@@ -421,11 +441,13 @@ def count_my_positions() -> int:
 def main() -> None:
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
+    sym_str = " · ".join(SYMBOLS)
     print(
         "\n"
         "╔══════════════════════════════════════════════╗\n"
-        "║     SWEEP SCALPER v1.0 — M1 Liquidity       ║\n"
-        "║     XAUUSD · M15 Trend · Wick Rejection     ║\n"
+        "║   SWEEP SCALPER v2.0 — Multi-Symbol M1      ║\n"
+        f"║   {sym_str:<43s}║\n"
+        "║   M15 Trend · Wick Rejection                ║\n"
         "╚══════════════════════════════════════════════╝\n"
     )
 
@@ -433,11 +455,16 @@ def main() -> None:
         log.error("Cannot start — MT5 connection failed.")
         return
 
-    info = mt5.account_info()
-    log.info("[START] Balance: $%.2f | Risk: %.1f%% | RR: 1:%.1f | Max trades: %d",
-             info.balance, RISK_PCT, RR_RATIO, MAX_TRADES)
+    # Enable all symbols in Market Watch
+    for symbol in SYMBOLS:
+        if not mt5.symbol_select(symbol, True):
+            log.warning("[INIT] Cannot select %s in Market Watch", symbol)
 
-    last_m1_time = None
+    info = mt5.account_info()
+    log.info("[START] Symbols: %s | Balance: $%.2f | Risk: %.1f%% | RR: 1:%.1f | Max/sym: %d",
+             sym_str, info.balance, RISK_PCT, RR_RATIO, MAX_TRADES_PER_SYMBOL)
+
+    last_m1_times: dict[str, object] = {s: None for s in SYMBOLS}
     scan_count = 0
     last_heartbeat = time.time()
 
@@ -448,71 +475,78 @@ def main() -> None:
                 time.sleep(5)
                 continue
 
-            # ── Position management (every tick) ────────────
+            # ── Position management for ALL symbols ─────────
             manage_breakeven()
 
-            # ── Fetch M1 data ───────────────────────────────
-            df_m1 = fetch_bars(SYMBOL, mt5.TIMEFRAME_M1, 200)
-            if df_m1.empty:
-                time.sleep(1)
-                continue
+            # ── Session filter (check once) ─────────────────
+            in_session = is_in_session()
 
-            # ── Wait for new M1 bar ─────────────────────────
-            current_m1_time = df_m1.index[-1]
-            if current_m1_time == last_m1_time:
-                # Heartbeat every 60s
+            any_new_bar = False
+
+            # ── Iterate each symbol ─────────────────────────
+            for symbol in SYMBOLS:
+                df_m1 = fetch_bars(symbol, mt5.TIMEFRAME_M1, 200)
+                if df_m1.empty:
+                    continue
+
+                # Wait for new M1 bar per symbol
+                current_m1_time = df_m1.index[-1]
+                if current_m1_time == last_m1_times[symbol]:
+                    continue
+
+                last_m1_times[symbol] = current_m1_time
+                any_new_bar = True
+                scan_count += 1
+
+                tick = mt5.symbol_info_tick(symbol)
+                bid = tick.bid if tick else 0
+                log.info("[SCAN] %s New M1 bar %s | Bid: %.5f", symbol, current_m1_time, bid)
+
+                # Session filter
+                if not in_session:
+                    log.info("[SKIP] %s Outside session (%02d:00-%02d:00)",
+                             symbol, SESSION_START_H, SESSION_END_H)
+                    continue
+
+                # Max trades per symbol
+                if count_my_positions(symbol) >= MAX_TRADES_PER_SYMBOL:
+                    log.info("[SKIP] %s Max trades (%d) reached", symbol, MAX_TRADES_PER_SYMBOL)
+                    continue
+
+                # Fetch M15 & evaluate signal
+                df_m15 = fetch_bars(symbol, mt5.TIMEFRAME_M15, 200)
+                signal = check_signal(df_m1, df_m15)
+
+                if signal is not None:
+                    log.info("[SIGNAL] %s %s detected — executing...", symbol, signal["direction"])
+                    if execute_trade(symbol, signal):
+                        log.info("[OK] %s Trade opened successfully.", symbol)
+                    else:
+                        log.warning("[FAIL] %s Trade execution failed.", symbol)
+                else:
+                    ema_val = ema(df_m15["close"], EMA_PERIOD).iloc[-1] if not df_m15.empty else 0
+                    trend_dir = "UP" if bid > ema_val else "DOWN"
+                    sh = find_recent_swing_high(df_m1.iloc[-30:])
+                    sl = find_recent_swing_low(df_m1.iloc[-30:])
+                    log.info(
+                        "[NO_SIGNAL] %s trend=%s ema15=%.5f | swing_H=%.5f swing_L=%.5f",
+                        symbol, trend_dir, ema_val,
+                        sh if sh else 0, sl if sl else 0,
+                    )
+
+            # ── Heartbeat (when no new bars) ────────────────
+            if not any_new_bar:
                 now = time.time()
                 if now - last_heartbeat >= 60:
                     acct = mt5.account_info()
                     eq = acct.equity if acct else 0
-                    n_pos = count_my_positions()
+                    n_pos = count_all_positions()
                     log.info(
-                        "[HEARTBEAT] Equity: %.2f | Positions: %d | Scans: %d",
+                        "[HEARTBEAT] Equity: %.2f | Total positions: %d | Scans: %d",
                         eq, n_pos, scan_count,
                     )
                     scan_count = 0
                     last_heartbeat = now
-                time.sleep(0.5)
-                continue
-
-            last_m1_time = current_m1_time
-            scan_count += 1
-
-            tick = mt5.symbol_info_tick(SYMBOL)
-            bid = tick.bid if tick else 0
-            log.info("[SCAN] New M1 bar %s | Bid: %.2f", current_m1_time, bid)
-
-            # ── Session filter ──────────────────────────────
-            if not is_in_session():
-                log.info("[SKIP] Outside session (%02d:00-%02d:00)", SESSION_START_H, SESSION_END_H)
-                continue
-
-            # ── Max trades filter ───────────────────────────
-            if count_my_positions() >= MAX_TRADES:
-                log.info("[SKIP] Max trades (%d) reached", MAX_TRADES)
-                continue
-
-            # ── Fetch M15 data & evaluate ───────────────────
-            df_m15 = fetch_bars(SYMBOL, mt5.TIMEFRAME_M15, 200)
-            signal = check_signal(df_m1, df_m15)
-
-            if signal is not None:
-                log.info("[SIGNAL] %s detected — executing...", signal["direction"])
-                if execute_trade(SYMBOL, signal):
-                    log.info("[OK] Trade opened successfully.")
-                else:
-                    log.warning("[FAIL] Trade execution failed.")
-            else:
-                # Compact log: show trend + nearest levels
-                ema_val = ema(df_m15["close"], EMA_PERIOD).iloc[-1] if not df_m15.empty else 0
-                trend_dir = "UP" if bid > ema_val else "DOWN"
-                sh = find_recent_swing_high(df_m1.iloc[-30:])
-                sl = find_recent_swing_low(df_m1.iloc[-30:])
-                log.info(
-                    "[NO_SIGNAL] trend=%s ema15=%.2f | swing_H=%.2f swing_L=%.2f",
-                    trend_dir, ema_val,
-                    sh if sh else 0, sl if sl else 0,
-                )
 
             time.sleep(0.5)
 
