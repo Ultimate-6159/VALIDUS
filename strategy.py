@@ -424,3 +424,264 @@ class Strategy:
         self.last_eval["detail"] = f"{direction} sweep@{sweep['sweep_level']:.5f} FVG={fvg['fvg_bottom']:.5f}-{fvg['fvg_top']:.5f}"
         log.info("[SIGNAL] Generated: %s", signal)
         return signal
+
+
+# ════════════════════════════════════════════════════════════
+#  Sweep Scalper Strategy
+#  M1 Fractal Sweep + Wick Rejection + HTF EMA Trend Filter
+#  + Quality Filters (wick size, body confirm, displacement)
+# ════════════════════════════════════════════════════════════
+class SweepScalperStrategy:
+    """
+    Lightweight scalping strategy with quality filters:
+      1. HTF EMA trend filter (BUY-only or SELL-only)
+      2. Lightweight ATR volatility check
+      3. 3-candle fractal swing detection on M1
+      4. Sweep + wick rejection on last closed M1 candle
+      5. Wick quality: sweep wick ≥ X% of ATR
+      6. Body confirmation: candle closes in rejection direction
+      7. Displacement: next bar confirms momentum
+    Call `evaluate(df_m1, df_htf)` — same interface as Strategy.
+    """
+
+    def __init__(self):
+        self.last_eval: dict = {}
+
+    # ── Fractal swing detection ─────────────────────────────
+    @staticmethod
+    def _find_fractal_high(df: pd.DataFrame, n: int) -> float | None:
+        """Most recent confirmed fractal swing high (N left + N right)."""
+        highs = df["high"]
+        if len(highs) < 2 * n + 1:
+            return None
+        for i in range(len(highs) - n - 1, n - 1, -1):
+            is_swing = True
+            for j in range(1, n + 1):
+                if highs.iloc[i] <= highs.iloc[i - j] or highs.iloc[i] <= highs.iloc[i + j]:
+                    is_swing = False
+                    break
+            if is_swing:
+                return float(highs.iloc[i])
+        return None
+
+    @staticmethod
+    def _find_fractal_low(df: pd.DataFrame, n: int) -> float | None:
+        """Most recent confirmed fractal swing low (N left + N right)."""
+        lows = df["low"]
+        if len(lows) < 2 * n + 1:
+            return None
+        for i in range(len(lows) - n - 1, n - 1, -1):
+            is_swing = True
+            for j in range(1, n + 1):
+                if lows.iloc[i] >= lows.iloc[i - j] or lows.iloc[i] >= lows.iloc[i + j]:
+                    is_swing = False
+                    break
+            if is_swing:
+                return float(lows.iloc[i])
+        return None
+
+    # ── Main evaluation ─────────────────────────────────────
+    def evaluate(
+        self, df_m1: pd.DataFrame, df_htf: pd.DataFrame
+    ) -> Signal | None:
+        """
+        Run sweep scalper pipeline with quality filters.
+        Returns a Signal when all conditions align, else None.
+        """
+        ema_period = config.SWEEP_EMA_PERIOD
+        fractal_n = config.SWEEP_FRACTAL_N
+        lookback_bars = config.SWEEP_LOOKBACK_BARS
+
+        price = float(df_m1["close"].iloc[-1]) if not df_m1.empty else 0.0
+
+        # Pre-compute ATR for quality checks
+        atr_series = _atr(
+            df_m1["high"], df_m1["low"], df_m1["close"],
+            length=config.SWEEP_ATR_PERIOD,
+        )
+        current_atr = float(atr_series.iloc[-1]) if (
+            not atr_series.empty and not np.isnan(atr_series.iloc[-1])
+        ) else 0.0
+
+        self.last_eval = {
+            "atr": current_atr,
+            "bb_exp": 0.0,
+            "price": price,
+            "fail": None,
+            "detail": "",
+        }
+
+        if len(df_m1) < 20 or len(df_htf) < ema_period + 5:
+            self.last_eval["fail"] = "DATA"
+            self.last_eval["detail"] = f"M1={len(df_m1)} HTF={len(df_htf)} bars (need more)"
+            return None
+
+        # ── Step 1: HTF EMA Trend Filter ────────────────────
+        ema_htf = df_htf["close"].ewm(span=ema_period, adjust=False).mean()
+        last_close_htf = df_htf["close"].iloc[-2]
+        last_ema_htf = ema_htf.iloc[-2]
+
+        if last_close_htf > last_ema_htf:
+            trend = "UP"
+        elif last_close_htf < last_ema_htf:
+            trend = "DOWN"
+        else:
+            self.last_eval["fail"] = "TREND"
+            self.last_eval["detail"] = "HTF close exactly on EMA — skip"
+            return None
+
+        # ── Step 2: Lightweight volatility check ────────────
+        if current_atr > 0 and price > 0:
+            atr_ratio = current_atr / price
+            if atr_ratio < config.SWEEP_MIN_ATR_RATIO:
+                self.last_eval["fail"] = "VOL_LOW"
+                self.last_eval["detail"] = (
+                    f"ATR/price={atr_ratio:.6f} < min={config.SWEEP_MIN_ATR_RATIO}"
+                )
+                return None
+
+        # ── Step 3: Find fractal swing levels on M1 ─────────
+        lookback = df_m1.iloc[-(lookback_bars + 1):-1]
+        swing_high = self._find_fractal_high(lookback, fractal_n)
+        swing_low = self._find_fractal_low(lookback, fractal_n)
+
+        # ── Step 4: Check last closed candle for sweep ──────
+        candle = df_m1.iloc[-2]
+        min_wick = current_atr * config.SWEEP_MIN_WICK_ATR if current_atr > 0 else 0.0
+
+        # ── BUY: sweep below swing low + reject ─────────────
+        if trend == "UP" and swing_low is not None:
+            swept_below = candle["low"] < swing_low
+            closed_above = candle["close"] > swing_low
+            if swept_below and closed_above:
+                sweep_wick = swing_low - candle["low"]
+
+                # ── Filter A: Wick quality ──────────────────
+                if min_wick > 0 and sweep_wick < min_wick:
+                    self.last_eval["fail"] = "WICK_SMALL"
+                    self.last_eval["detail"] = (
+                        f"BUY wick={sweep_wick:.5f} < min={min_wick:.5f} "
+                        f"({config.SWEEP_MIN_WICK_ATR:.0%} ATR)"
+                    )
+                    return None
+
+                # ── Filter B: Body confirmation ─────────────
+                if config.SWEEP_BODY_CONFIRM:
+                    if candle["close"] <= candle["open"]:
+                        self.last_eval["fail"] = "BODY_DIR"
+                        self.last_eval["detail"] = (
+                            f"BUY but candle bearish (O={candle['open']:.5f} "
+                            f"C={candle['close']:.5f}) — no rejection"
+                        )
+                        return None
+
+                # ── Filter C: Displacement bar ──────────────
+                if config.SWEEP_DISPLACEMENT:
+                    disp = df_m1.iloc[-1]  # current forming / latest bar
+                    if disp["close"] <= disp["open"]:
+                        self.last_eval["fail"] = "DISP_FAIL"
+                        self.last_eval["detail"] = (
+                            f"BUY but next bar bearish (O={disp['open']:.5f} "
+                            f"C={disp['close']:.5f}) — no momentum"
+                        )
+                        return None
+
+                entry = float(candle["close"])
+                sl_anchor = float(candle["low"])
+                risk = entry - sl_anchor
+                if risk <= 0:
+                    self.last_eval["fail"] = "RISK_ZERO"
+                    self.last_eval["detail"] = f"risk={risk:.5f}"
+                    return None
+                tp = entry + risk * config.RISK_REWARD_RATIO
+                log.info(
+                    "[SWEEP_SCALP] BUY — sweep low=%.5f wick=%.5f "
+                    "(candle low=%.5f, close=%.5f) HTF UP ATR=%.5f",
+                    swing_low, sweep_wick, candle["low"],
+                    candle["close"], current_atr,
+                )
+                self.last_eval["fail"] = None
+                self.last_eval["detail"] = (
+                    f"BUY sweep_low={swing_low:.5f} wick={sweep_wick:.5f} "
+                    f"trend={trend} ema={last_ema_htf:.5f} atr={current_atr:.5f}"
+                )
+                return Signal(
+                    direction="BUY",
+                    entry=round(entry, 5),
+                    sl=round(sl_anchor, 5),
+                    tp=round(tp, 5),
+                    fvg_zone=(round(swing_low, 5), round(entry, 5)),
+                    reason=f"Sweep low@{swing_low:.5f} wick={sweep_wick:.5f}",
+                )
+
+        # ── SELL: sweep above swing high + reject ────────────
+        if trend == "DOWN" and swing_high is not None:
+            swept_above = candle["high"] > swing_high
+            closed_below = candle["close"] < swing_high
+            if swept_above and closed_below:
+                sweep_wick = candle["high"] - swing_high
+
+                # ── Filter A: Wick quality ──────────────────
+                if min_wick > 0 and sweep_wick < min_wick:
+                    self.last_eval["fail"] = "WICK_SMALL"
+                    self.last_eval["detail"] = (
+                        f"SELL wick={sweep_wick:.5f} < min={min_wick:.5f} "
+                        f"({config.SWEEP_MIN_WICK_ATR:.0%} ATR)"
+                    )
+                    return None
+
+                # ── Filter B: Body confirmation ─────────────
+                if config.SWEEP_BODY_CONFIRM:
+                    if candle["close"] >= candle["open"]:
+                        self.last_eval["fail"] = "BODY_DIR"
+                        self.last_eval["detail"] = (
+                            f"SELL but candle bullish (O={candle['open']:.5f} "
+                            f"C={candle['close']:.5f}) — no rejection"
+                        )
+                        return None
+
+                # ── Filter C: Displacement bar ──────────────
+                if config.SWEEP_DISPLACEMENT:
+                    disp = df_m1.iloc[-1]
+                    if disp["close"] >= disp["open"]:
+                        self.last_eval["fail"] = "DISP_FAIL"
+                        self.last_eval["detail"] = (
+                            f"SELL but next bar bullish (O={disp['open']:.5f} "
+                            f"C={disp['close']:.5f}) — no momentum"
+                        )
+                        return None
+
+                entry = float(candle["close"])
+                sl_anchor = float(candle["high"])
+                risk = sl_anchor - entry
+                if risk <= 0:
+                    self.last_eval["fail"] = "RISK_ZERO"
+                    self.last_eval["detail"] = f"risk={risk:.5f}"
+                    return None
+                tp = entry - risk * config.RISK_REWARD_RATIO
+                log.info(
+                    "[SWEEP_SCALP] SELL — sweep high=%.5f wick=%.5f "
+                    "(candle high=%.5f, close=%.5f) HTF DOWN ATR=%.5f",
+                    swing_high, sweep_wick, candle["high"],
+                    candle["close"], current_atr,
+                )
+                self.last_eval["fail"] = None
+                self.last_eval["detail"] = (
+                    f"SELL sweep_high={swing_high:.5f} wick={sweep_wick:.5f} "
+                    f"trend={trend} ema={last_ema_htf:.5f} atr={current_atr:.5f}"
+                )
+                return Signal(
+                    direction="SELL",
+                    entry=round(entry, 5),
+                    sl=round(sl_anchor, 5),
+                    tp=round(tp, 5),
+                    fvg_zone=(round(entry, 5), round(swing_high, 5)),
+                    reason=f"Sweep high@{swing_high:.5f} wick={sweep_wick:.5f}",
+                )
+
+        # ── No signal ───────────────────────────────────────
+        self.last_eval["fail"] = "NO_SWEEP"
+        sh_str = f"{swing_high:.5f}" if swing_high else "None"
+        sl_str = f"{swing_low:.5f}" if swing_low else "None"
+        self.last_eval["detail"] = f"trend={trend} swing_H={sh_str} swing_L={sl_str}"
+        return None

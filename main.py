@@ -20,7 +20,7 @@ import MetaTrader5 as mt5
 
 import config
 import trade_logger
-from strategy import Strategy, Signal
+from strategy import Strategy, SweepScalperStrategy, Signal
 from utils import log, line_notify, is_news_window, is_in_session
 
 
@@ -558,6 +558,7 @@ class Dashboard:
             "|           V A L I D U S   v1.0               |",
             "|       Smart Money Sniper - MT5               |",
             "+----------------------------------------------+",
+            f"|  Strategy: {config.STRATEGY_MODE:<34}|",
             f"|  Status  : {self.status:<34}|",
             f"|  Tier    : {tier_name:<8}  Risk: {config.RISK_PCT:.2f}%  DD: {config.DAILY_DD_LIMIT_PCT:.1f}%    |",
             f"|  Balance : {balance:>12,.2f}                       |",
@@ -589,7 +590,10 @@ class ValidusBot:
     def __init__(self):
         self.guardian = Guardian()
         self.executor = ExecutionMaster()
-        self.strategy = Strategy()
+        if config.STRATEGY_MODE == "SWEEP":
+            self.strategy = SweepScalperStrategy()
+        else:
+            self.strategy = Strategy()
         self.dashboard = Dashboard()
         self._running = False
         self._last_m1_time: dict[str, dt.datetime] = {}

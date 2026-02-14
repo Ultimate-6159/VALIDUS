@@ -222,6 +222,41 @@ MTF_FVG_ENABLED        = False    # ปิดไว้ก่อน — เพิ
 MTF_FVG_LOOKBACK       = 20      # M5 bars to scan for recent FVG zones
 MTF_FVG_MIN_SIZE_ATR   = 0.3     # M5 FVG min gap as ATR multiplier
 
+# ════════════════════════════════════════════════════════════
+#  Strategy Mode
+# ════════════════════════════════════════════════════════════
+#  "SMC"   = Smart Money Concept (Sweep → Displacement → FVG)
+#  "SWEEP" = Sweep Scalper (M1 Fractal Sweep + HTF EMA Trend)
+STRATEGY_MODE          = "SWEEP"    # "SMC" | "SWEEP"
+
+# ── Sweep Scalper Settings (only used when STRATEGY_MODE = "SWEEP") ──
+SWEEP_EMA_PERIOD       = 50       # EMA period on HTF for trend filter
+SWEEP_FRACTAL_N        = 1        # Fractal detection: N left + N right candles
+SWEEP_LOOKBACK_BARS    = 30       # Closed M1 bars to scan for swing levels
+
+# ── Sweep Quality Filters (เพิ่ม win rate โดยไม่ลดสัญญาณมาก) ────
+SWEEP_MIN_WICK_ATR     = 0.25     # wick sweep ต้อง ≥ 25% ของ ATR (กัน noise)
+SWEEP_BODY_CONFIRM     = True     # BUY ต้อง bullish close, SELL ต้อง bearish close
+SWEEP_DISPLACEMENT     = True     # bar ถัดไปต้อง confirm ทิศทาง (momentum จริง)
+SWEEP_MIN_ATR_RATIO    = 0.00003  # ATR/price ขั้นต่ำ (กันตลาดตาย)
+SWEEP_ATR_PERIOD       = 14       # ATR period สำหรับ quality checks
+
+# Per-symbol overrides (padding, spread, BE offset, trail — in points)
+SYMBOL_OVERRIDES = {
+    "XAUUSDm":  {"sl_pad_pts": 200, "max_spread_pts": 450, "be_offset_pts": 100, "trail_pts": 150},
+    "EURUSDm":  {"sl_pad_pts":   5, "max_spread_pts":  15, "be_offset_pts":   3, "trail_pts":   5},
+    "GBPUSDm":  {"sl_pad_pts":   5, "max_spread_pts":  20, "be_offset_pts":   3, "trail_pts":   5},
+}
+SYMBOL_OVERRIDES_DEFAULT = {"sl_pad_pts": 10, "max_spread_pts": 20, "be_offset_pts": 5, "trail_pts": 8}
+
+
+def get_symbol_setting(symbol: str, key: str):
+    """Get per-symbol setting with fallback to SYMBOL_OVERRIDES_DEFAULT."""
+    return SYMBOL_OVERRIDES.get(symbol, SYMBOL_OVERRIDES_DEFAULT).get(
+        key, SYMBOL_OVERRIDES_DEFAULT[key]
+    )
+
+
 # ── Backtest ────────────────────────────────────────────────
 BACKTEST_DATA_DIR      = "data"   # Directory for historical CSV files
 BACKTEST_INITIAL_BAL   = 10_000.0 # Starting balance for backtest
