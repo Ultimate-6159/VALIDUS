@@ -667,7 +667,10 @@ class ValidusBot:
 
                 # Dashboard refresh
                 if not config.HEADLESS:
-                    sys.stdout.write("\033[2J\033[H")  # clear terminal
+                    if os.name == "nt":
+                        os.system("cls")
+                    else:
+                        sys.stdout.write("\033[2J\033[H")
                     print(self.dashboard.render())
 
             except Exception as exc:
