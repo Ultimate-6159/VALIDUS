@@ -541,6 +541,13 @@ class Dashboard:
     def __init__(self):
         self.status = "STOPPED"
         self._pnl_today: float = 0.0
+        # Live activity fields (updated by ValidusBot)
+        self.total_scans: int = 0
+        self.last_scan_time: str = "---"
+        self.last_scan_symbol: str = "---"
+        self.last_reject: str = "---"
+        self.session_active: bool = False
+        self.signals_today: int = 0
 
     def render(self) -> str:
         positions = mt5.positions_get() or []
@@ -551,6 +558,9 @@ class Dashboard:
         balance = acct.balance if acct else 0
         equity = acct.equity if acct else 0
         tier_name = config.get_tier_name(balance) if balance > 0 else "---"
+
+        session_str = "IN SESSION" if self.session_active else "OUT OF SESSION"
+        now_str = dt.datetime.now(dt.timezone.utc).strftime("%H:%M:%S UTC")
 
         lines = [
             "",
@@ -565,6 +575,12 @@ class Dashboard:
             f"|  Equity  : {equity:>12,.2f}                       |",
             f"|  PnL     : {self._pnl_today:>+12,.2f}                       |",
             f"|  Positions: {len(my_pos)}/{config.MAX_POSITIONS:<31}|",
+            "+---------- Activity -------------------------+",
+            f"|  Clock   : {now_str:<34}|",
+            f"|  Session : {session_str:<34}|",
+            f"|  Scans   : {self.total_scans:<8} Signals: {self.signals_today:<16}|",
+            f"|  Last scan: {self.last_scan_symbol:<6} {self.last_scan_time:<24}|",
+            f"|  Reject  : {self.last_reject:<34}|",
             "+----------------------------------------------+",
         ]
         for p in my_pos:
@@ -601,6 +617,8 @@ class ValidusBot:
         self._heartbeat_interval = 60   # log heartbeat every 60 seconds
         self._last_heartbeat: float = 0
         self._scan_count: int = 0
+        self._total_scans: int = 0
+        self._signals_today: int = 0
         self._loop_started_logged: bool = False
 
     # ── Start ───────────────────────────────────────────────
@@ -691,13 +709,21 @@ class ValidusBot:
             return  # same bar, waiting for next M1 close (normal)
         self._last_m1_time[symbol] = last_time
         self._scan_count += 1
+        self._total_scans += 1
 
         tick = mt5.symbol_info_tick(symbol)
         bid = tick.bid if tick else 0
         log.info("[%s] New M1 bar %s | Bid: %.2f -- scanning...", symbol, last_time, bid)
 
+        # Update dashboard activity
+        self.dashboard.total_scans = self._total_scans
+        self.dashboard.last_scan_time = last_time.strftime("%H:%M:%S")
+        self.dashboard.last_scan_symbol = symbol
+
         # Session filter
-        if not is_in_session():
+        self.dashboard.session_active = is_in_session()
+        if not self.dashboard.session_active:
+            self.dashboard.last_reject = f"{symbol}: OUT_OF_SESSION"
             log.info("[%s] Outside session (%02d:00-%02d:00 UTC) -- skipping.",
                      symbol, config.SESSION_START_UTC, config.SESSION_END_UTC)
             trade_logger.log_decision(
@@ -708,6 +734,7 @@ class ValidusBot:
 
         # News filter
         if is_news_window():
+            self.dashboard.last_reject = f"{symbol}: NEWS_WINDOW"
             log.info("[%s] News window active -- skipping.", symbol)
             trade_logger.log_decision(
                 symbol=symbol, event="SKIP_NEWS", price=bid,
@@ -720,6 +747,7 @@ class ValidusBot:
         if last_sig_time is not None:
             bars_elapsed = (last_time - last_sig_time).total_seconds() / 60
             if bars_elapsed < config.SIGNAL_COOLDOWN_BARS:
+                self.dashboard.last_reject = f"{symbol}: COOLDOWN {bars_elapsed:.0f}/{config.SIGNAL_COOLDOWN_BARS}"
                 log.info("[%s] Signal cooldown: %.0f/%d bars -- skipping.",
                          symbol, bars_elapsed, config.SIGNAL_COOLDOWN_BARS)
                 trade_logger.log_decision(
@@ -734,6 +762,7 @@ class ValidusBot:
         pending = mt5.orders_get(symbol=symbol) or []
         my_pending = [o for o in pending if o.magic == config.ORDER_MAGIC]
         if len(my_pos) + len(my_pending) >= config.MAX_POSITIONS:
+            self.dashboard.last_reject = f"{symbol}: MAX_POS ({len(my_pos)}+{len(my_pending)})"
             log.info("[%s] Max positions (%d) reached -- skipping.", symbol, config.MAX_POSITIONS)
             trade_logger.log_decision(
                 symbol=symbol, event="SKIP_MAXPOS", price=bid,
@@ -745,6 +774,8 @@ class ValidusBot:
         signal = self.strategy.evaluate(df_m1, df_m5)
         ev = self.strategy.last_eval
         if signal is not None:
+            self._signals_today += 1
+            self.dashboard.signals_today = self._signals_today
             log.info("[%s] >> SIGNAL FOUND: %s", symbol, signal)
             trade_logger.log_decision(
                 symbol=symbol, event="SIGNAL", direction=signal.direction,
@@ -757,10 +788,12 @@ class ValidusBot:
                 log.info("[%s] Signal cooldown set for %d bars.",
                          symbol, config.SIGNAL_COOLDOWN_BARS)
         else:
+            fail_reason = ev.get('fail', '?')
+            self.dashboard.last_reject = f"{symbol}: {fail_reason}"
             trade_logger.log_decision(
                 symbol=symbol, event="COND_FAIL", price=bid,
                 atr=ev.get("atr", 0), bb_exp=ev.get("bb_exp", 0),
-                detail=f"{ev.get('fail', '?')}: {ev.get('detail', '')}",
+                detail=f"{fail_reason}: {ev.get('detail', '')}",
             )
             log.info("[%s] No signal (conditions not met).", symbol)
 
