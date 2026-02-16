@@ -225,6 +225,11 @@ class ExecutionMaster:
         max_spread = config.MAX_SPREAD_POINTS * sym.point
         if spread > max_spread:
             log.warning("Spread %.1f > max %d pts — skipping", spread / sym.point, config.MAX_SPREAD_POINTS)
+            trade_logger.log_decision(
+                symbol=symbol, event="ORDER_REJECT", direction=signal.direction,
+                price=tick.bid, entry=signal.entry, sl=signal.sl, tp=signal.tp,
+                detail=f"SPREAD {spread/sym.point:.1f} > max {config.MAX_SPREAD_POINTS} pts",
+            )
             return False
 
         # ── Decide: limit or market ─────────────────────
@@ -265,10 +270,21 @@ class ExecutionMaster:
             }
             result = mt5.order_send(request)
             if result is None:
-                log.error("[LIMIT] order_send returned None -- %s", mt5.last_error())
+                err = mt5.last_error()
+                log.error("[LIMIT] order_send returned None -- %s", err)
+                trade_logger.log_decision(
+                    symbol=symbol, event="ORDER_REJECT", direction=signal.direction,
+                    price=price, entry=signal.entry, sl=signal.sl, tp=signal.tp,
+                    lot=lot, detail=f"LIMIT_NONE: {err}",
+                )
                 return False
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 log.error("[LIMIT] Failed [%d]: %s", result.retcode, result.comment)
+                trade_logger.log_decision(
+                    symbol=symbol, event="ORDER_REJECT", direction=signal.direction,
+                    price=price, entry=signal.entry, sl=signal.sl, tp=signal.tp,
+                    lot=lot, detail=f"LIMIT_FAIL [{result.retcode}]: {result.comment}",
+                )
                 return False
             log.info(
                 "[LIMIT] %s %s %.2f lot @ %.5f  SL=%.5f  TP=%.5f  ticket=%d",
@@ -321,10 +337,21 @@ class ExecutionMaster:
         }
         result = mt5.order_send(request)
         if result is None:
-            log.error("[ORDER] order_send returned None -- %s", mt5.last_error())
+            err = mt5.last_error()
+            log.error("[ORDER] order_send returned None -- %s", err)
+            trade_logger.log_decision(
+                symbol=symbol, event="ORDER_REJECT", direction=signal.direction,
+                price=price, entry=signal.entry, sl=signal.sl, tp=actual_tp,
+                lot=lot, detail=f"MARKET_NONE: {err}",
+            )
             return False
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             log.error("[ORDER] Failed [%d]: %s", result.retcode, result.comment)
+            trade_logger.log_decision(
+                symbol=symbol, event="ORDER_REJECT", direction=signal.direction,
+                price=price, entry=signal.entry, sl=signal.sl, tp=actual_tp,
+                lot=lot, detail=f"MARKET_FAIL [{result.retcode}]: {result.comment}",
+            )
             return False
 
         log.info(
@@ -785,8 +812,11 @@ class ValidusBot:
             )
             if self.executor.open_order(symbol, signal):
                 self._last_signal_time[symbol] = last_time
+                self.dashboard.last_reject = f"{symbol}: SIGNAL OK >> FILLED"
                 log.info("[%s] Signal cooldown set for %d bars.",
                          symbol, config.SIGNAL_COOLDOWN_BARS)
+            else:
+                self.dashboard.last_reject = f"{symbol}: SIGNAL >> ORDER FAIL"
         else:
             fail_reason = ev.get('fail', '?')
             self.dashboard.last_reject = f"{symbol}: {fail_reason}"
