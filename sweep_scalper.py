@@ -18,6 +18,9 @@ config.STRATEGY_MODE = "SWEEP"
 config.SYMBOLS = ["XAUUSDm", "EURUSDm", "GBPUSDm"]
 config.TIMEFRAME_HTF = "M15"
 
+# SWEEP uses market orders (entry = current close, no pullback expected)
+config.USE_LIMIT_ORDER = False
+
 # Auto-start for convenience
 config.AUTO_START = True
 

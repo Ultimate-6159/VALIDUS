@@ -214,7 +214,7 @@ TRAILING_ATR_PERIOD    = 14       # ATR period for trail distance calculation
 TRAILING_ATR_MULT      = 2.0     # Trail SL at price ± ATR × mult (ให้ room วิ่ง)
 
 # ── Limit Order Mode ────────────────────────────────────────
-USE_LIMIT_ORDER        = True     # True = limit at FVG mid | False = market order
+USE_LIMIT_ORDER        = False    # True = limit at FVG mid (SMC) | False = market order (SWEEP)
 LIMIT_ORDER_EXPIRY_SEC = 600      # Cancel unfilled limit after 10 min (600s)
 
 # ── Multi-Timeframe FVG (M5 confirmation) ───────────────────
