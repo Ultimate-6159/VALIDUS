@@ -55,16 +55,23 @@ def line_notify(message: str) -> None:
 # ── News Filter (Forex Factory) ─────────────────────────────
 _news_cache: list[dict] = []
 _news_cache_date: dt.date | None = None
+_news_fetch_failed_until: float = 0.0  # backoff timestamp
 
 
 def _fetch_news() -> list[dict]:
     """Fetch today's high-impact events from Forex Factory calendar."""
-    global _news_cache, _news_cache_date
+    global _news_cache, _news_cache_date, _news_fetch_failed_until
     today = dt.date.today()
-    if _news_cache_date == today and _news_cache:
+    if _news_cache_date == today and _news_cache is not None:
         return _news_cache
+
+    # Backoff: don't retry for 300s after a failure
+    import time as _time
+    if _time.time() < _news_fetch_failed_until:
+        return _news_cache
+
     try:
-        url = f"https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         events = resp.json()
@@ -75,9 +82,11 @@ def _fetch_news() -> list[dict]:
             and e.get("country", "").upper() in config.NEWS_CURRENCIES
         ]
         _news_cache_date = today
+        log.info("[NEWS] Fetched %d high-impact events for today.", len(_news_cache))
     except Exception as exc:
-        log.warning("News fetch failed: %s", exc)
-        _news_cache = []
+        log.warning("News fetch failed: %s — retrying in 5 min.", exc)
+        _news_fetch_failed_until = _time.time() + 300  # 5 min backoff
+        # Keep existing cache, don't clear
     return _news_cache
 
 
